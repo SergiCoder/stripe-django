@@ -1,0 +1,75 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: --model claude-opus-4-6
+          prompt: |
+            Review the changes in this pull request.
+
+            Focus on:
+            - Security: authentication, authorization, injection vulnerabilities, secrets in code, exposed sensitive data
+            - Django best practices: ORM usage, settings configuration, URL patterns, middleware, signals
+            - Model and query performance: N+1 queries, missing indexes, inefficient querysets
+            - Stripe integration: webhook signature verification, idempotency, error handling
+            - Test coverage: missing tests for critical paths, edge cases, error scenarios
+
+            Post a single structured review comment with this format:
+
+            ```
+            # Code Review
+
+            **Files changed:** <count>
+            **Profiles run:** security, django, performance, stripe, testing
+
+            ---
+
+            ## Critical & High Findings
+            <grouped by file>
+
+            ## Medium Findings
+            <grouped by file>
+
+            ## Low Findings
+            <grouped by file>
+
+            ## Summary
+
+            | Profile | Critical | High | Medium | Low |
+            |---|---|---|---|---|
+            | ... | ... | ... | ... | ... |
+            | **Total** | **X** | **X** | **X** | **X** |
+            ```
+
+            If there are no findings, post: "No issues found. Ready to merge."
+
+            Do not auto-fix anything — report only.
+
+  auto-approve:
+    needs: review
+    if: github.event.pull_request.user.login == 'SergiCoder'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Approve PR
+        run: gh pr review ${{ github.event.pull_request.number }} --approve --body "Maintainer PR — auto-approved."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
