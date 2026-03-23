@@ -38,8 +38,8 @@ services:
     ports:
       - "8001:8001"
     env_file:
-      - .env.local
       - .env.django
+      - .env.local
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-stripe_saas}:${POSTGRES_PASSWORD:-stripe_saas}@postgres:5432/${POSTGRES_DB:-stripe_saas}
       REDIS_URL: redis://redis:6379/0
@@ -65,8 +65,8 @@ services:
       dockerfile: infra/Dockerfile
     command: uv run celery -A config.celery worker --loglevel=info
     env_file:
-      - .env.local
       - .env.django
+      - .env.local
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-stripe_saas}:${POSTGRES_PASSWORD:-stripe_saas}@postgres:5432/${POSTGRES_DB:-stripe_saas}
       REDIS_URL: redis://redis:6379/0
