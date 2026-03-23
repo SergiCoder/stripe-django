@@ -29,7 +29,6 @@ jobs:
           claude_args: --model claude-opus-4-6 --max-turns 10 --allowedTools "Bash(git diff*),Bash(git log*),Bash(git show*),Read,Glob,Grep,mcp__github__*"
           prompt: |
             Review the changes in this pull request for code quality, correctness, and security.
-            Analyze the diff, then post your findings as a single review comment on the PR.
 
             Focus on:
             - Security: authentication, authorization, injection vulnerabilities, secrets in code, exposed sensitive data
@@ -38,22 +37,13 @@ jobs:
             - Stripe integration: webhook signature verification, idempotency, error handling
             - Test coverage: missing tests for critical paths, edge cases, error scenarios
 
-            Use this format for your review comment:
-
-            # Code Review
-
-            **Files changed:** <count>
-
-            ## Critical & High Findings
-            <grouped by file, or "None">
-
-            ## Medium Findings
-            <grouped by file, or "None">
-
-            ## Low Findings
-            <grouped by file, or "None">
-
-            ## Summary
+            Instructions:
+            1. Analyze the diff to identify all findings.
+            2. Submit a single GitHub pull request review using mcp__github__create_pull_request_review.
+               - Use event "COMMENT" if there are only low/medium findings, or "REQUEST_CHANGES" for critical/high findings.
+               - For each finding, add an inline comment on the specific file and line where the issue occurs.
+               - Each inline comment should include the severity (CRITICAL/HIGH/MEDIUM/LOW), a short title, and a clear explanation.
+            3. In the review body, post a summary table:
 
             | Profile | Critical | High | Medium | Low |
             |---|---|---|---|---|
@@ -64,6 +54,6 @@ jobs:
             | Testing | ... | ... | ... | ... |
             | **Total** | **X** | **X** | **X** | **X** |
 
-            If there are no findings, post: "No issues found. Ready to merge."
+            If there are no findings, approve the PR with event "APPROVE" and body "No issues found. Ready to merge."
 
             Do not auto-fix anything — report only.
