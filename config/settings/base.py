@@ -46,7 +46,7 @@ class _Env(BaseSettings):
     enable_session_auth: bool = False  # dev-only: allows browsable API via Django session
 
 
-env = _Env()
+env = _Env()  # type: ignore[call-arg]
 
 
 def _parse_db_url(url: str) -> dict[str, object]:
@@ -83,10 +83,6 @@ INSTALLED_APPS = [
     "hijack",
     "hijack.contrib.admin",
     "apps.users",
-    "apps.billing",
-    "apps.orgs",
-    "apps.admin_panel",
-    "apps.dashboard",
 ]
 
 MIDDLEWARE = [
@@ -99,7 +95,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
-    "middleware.security.SecurityHeadersMiddleware",
+    # "middleware.security.SecurityHeadersMiddleware",  # TODO: PR 6
     "hijack.middleware.HijackUserMiddleware",
 ]
 
@@ -156,8 +152,10 @@ REST_FRAMEWORK = {
         "user": "1000/hour",
         "auth": "10/minute",
         "billing": "30/hour",
+        "account": "10/hour",
+        "account_export": "3/hour",
     },
-    "EXCEPTION_HANDLER": "middleware.exceptions.domain_exception_handler",
+    # "EXCEPTION_HANDLER": "middleware.exceptions.domain_exception_handler",  # TODO: PR 4
 }
 
 CORS_ALLOWED_ORIGINS = env.cors_allowed_origins

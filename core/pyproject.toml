@@ -8,18 +8,18 @@ version = "0.1.0"
 description = "Shared business logic for Stripe SaaS — framework-agnostic"
 requires-python = ">=3.12"
 dependencies = [
-    "pydantic[email]>=2.7",
-    "stripe>=10.0",
+    "pydantic[email]>=2.12.5",
+    "stripe>=14.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "pytest-anyio>=0.0.0",
-    "pyright>=1.1",
-    "ruff>=0.4",
-    "pydantic[email]>=2.12.5",
+    "mypy>=1.14",
+    "ruff>=0.14",
     "pytest-html>=4.2.0",
+    "pip-audit>=2.7",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -29,12 +29,10 @@ packages = ["stripe_saas_core"]
 testpaths = ["tests"]
 addopts = "--html=reports/test-report.html --self-contained-html"
 
-[tool.pyright]
-typeCheckingMode = "strict"
-pythonVersion = "3.12"
-venvPath = "."
-venv = ".venv"
-ignore = ["tests"]
+[tool.mypy]
+python_version = "3.12"
+strict = true
+exclude = [".venv", "__pycache__", "tests"]
 
 [tool.ruff]
 line-length = 100
