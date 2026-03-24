@@ -93,6 +93,26 @@ async def test_update_seat_count_valid() -> None:
 
 
 @pytest.mark.anyio
+async def test_update_seat_count_minimum_valid() -> None:
+    mock_sub = MagicMock()
+    mock_sub.__getitem__ = MagicMock(
+        side_effect=lambda k: {"items": {"data": [{"id": "si_min"}]}}[k]
+    )
+
+    with (
+        patch("stripe.Subscription.retrieve", return_value=mock_sub),
+        patch("stripe.Subscription.modify") as mock_modify,
+    ):
+        await update_seat_count(stripe_subscription_id="sub_abc", quantity=1)
+
+    mock_modify.assert_called_once_with(
+        "sub_abc",
+        items=[{"id": "si_min", "quantity": 1}],
+        proration_behavior="create_prorations",
+    )
+
+
+@pytest.mark.anyio
 async def test_update_seat_count_zero_raises() -> None:
     with pytest.raises(ValueError, match="at least 1"):
         await update_seat_count(stripe_subscription_id="sub_abc", quantity=0)

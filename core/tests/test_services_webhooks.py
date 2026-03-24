@@ -513,6 +513,38 @@ async def test_sync_subscription_quantity_none_defaults_to_one() -> None:
 
 
 @pytest.mark.anyio
+async def test_sync_subscription_with_explicit_quantity() -> None:
+    customer_repo = InMemoryStripeCustomerRepository()
+    plan_repo = InMemoryPlanRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_qty5")
+    await customer_repo.save(customer)
+    plan = make_plan()
+    plan_repo._plans[plan.id] = plan
+    price = make_plan_price(plan_id=plan.id, stripe_price_id="price_qty5")
+    plan_repo._prices[price.id] = price
+
+    repos = _make_repos(
+        customer_repo=customer_repo,
+        plan_repo=plan_repo,
+        subscription_repo=subscription_repo,
+    )
+    event = _sub_event(
+        "customer.subscription.created",
+        stripe_customer_id="cus_qty5",
+        price_id="price_qty5",
+        quantity=5,
+    )
+
+    with patch("stripe.Webhook.construct_event", return_value=event):
+        await handle_stripe_event(b"payload", "sig", "secret", repos)
+
+    sub = next(iter(subscription_repo._store.values()))
+    assert sub.quantity == 5
+
+
+@pytest.mark.anyio
 async def test_sync_subscription_with_canceled_at() -> None:
     customer_repo = InMemoryStripeCustomerRepository()
     plan_repo = InMemoryPlanRepository()
@@ -580,3 +612,6 @@ async def test_subscription_deleted_marks_canceled() -> None:
     updated = subscription_repo._store[sub.id]
     assert updated.status == SubscriptionStatus.CANCELED
     assert updated.canceled_at is not None
+    assert updated.stripe_id == "sub_to_delete"
+    assert updated.plan_id == sub.plan_id
+    assert updated.stripe_customer_id == sub.stripe_customer_id
