@@ -76,7 +76,7 @@ async def create_checkout_session(
 ) -> str:
     """Create a Stripe Checkout Session and return the hosted URL."""
     subscription_data: dict[str, object] = {}
-    if trial_period_days:
+    if trial_period_days is not None:
         subscription_data["trial_period_days"] = trial_period_days
     if metadata:
         subscription_data["metadata"] = metadata

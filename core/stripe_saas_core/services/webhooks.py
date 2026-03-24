@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -99,14 +100,14 @@ def _extract_discount(sub_data: dict[str, Any]) -> tuple[str | None, int | None,
     discount_percent = int(coupon["percent_off"]) if coupon.get("percent_off") else None
 
     raw_end = discount.get("end")
-    discount_end_at = datetime.fromtimestamp(int(raw_end), tz=UTC) if raw_end else None
+    discount_end_at = datetime.fromtimestamp(int(raw_end), tz=UTC) if raw_end is not None else None
 
     return promotion_code_id, discount_percent, discount_end_at
 
 
 def _ts_to_dt(value: int | float | None) -> datetime | None:
     """Convert an optional Unix timestamp to a UTC datetime."""
-    return datetime.fromtimestamp(int(value), tz=UTC) if value else None
+    return datetime.fromtimestamp(int(value), tz=UTC) if value is not None else None
 
 
 async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> None:
@@ -114,20 +115,23 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
     from stripe_saas_core.exceptions import WebhookDataError
 
     stripe_customer_str = str(sub_data["customer"])
-    customer = await repos.customers.get_by_stripe_id(stripe_customer_str)
+    first_item: dict[str, Any] = sub_data["items"]["data"][0]
+    price_id = str(first_item["price"]["id"])
+    stripe_sub_id = str(sub_data["id"])
+
+    customer, plan_price, existing = await asyncio.gather(
+        repos.customers.get_by_stripe_id(stripe_customer_str),
+        repos.plans.get_price_by_stripe_id(price_id),
+        repos.subscriptions.get_by_stripe_id(stripe_sub_id),
+    )
+
     if customer is None:
         logger.warning("Received subscription event for unknown customer %s", stripe_customer_str)
         raise WebhookDataError(f"Unknown customer {stripe_customer_str}")
 
-    first_item: dict[str, Any] = sub_data["items"]["data"][0]
-    price_id = str(first_item["price"]["id"])
-    plan_price = await repos.plans.get_price_by_stripe_id(price_id)
     if plan_price is None:
         logger.warning("Received subscription event for unknown price %s", price_id)
         raise WebhookDataError(f"Unknown price {price_id}")
-
-    stripe_sub_id = str(sub_data["id"])
-    existing = await repos.subscriptions.get_by_stripe_id(stripe_sub_id)
     promotion_code_id, discount_percent, discount_end_at = _extract_discount(sub_data)
 
     subscription = Subscription(

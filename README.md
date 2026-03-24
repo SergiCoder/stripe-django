@@ -80,14 +80,20 @@ stripe-django/
 ## Development
 
 ```bash
-# Run tests
+# Run Django tests
 uv run pytest -v
+
+# Run core package tests
+cd core && uv run pytest -v
 
 # Lint
 uv run ruff check .
 
-# Typecheck
+# Typecheck (Django layer)
 uv run mypy .
+
+# Typecheck (core package)
+cd core && uv run pyright
 
 # Format
 uv run ruff format .
