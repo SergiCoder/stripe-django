@@ -186,6 +186,69 @@ async def test_create_checkout_session_with_trial_and_metadata() -> None:
 
 
 @pytest.mark.anyio
+async def test_create_checkout_session_custom_quantity_and_locale() -> None:
+    mock_session = MagicMock()
+    mock_session.url = "https://checkout.stripe.com/pay/cs_qty"
+
+    with patch("stripe.checkout.Session.create", return_value=mock_session) as mock_create:
+        await create_checkout_session(
+            stripe_customer_id="cus_abc",
+            client_reference_id="user_123",
+            price_id="price_abc",
+            quantity=5,
+            locale="es",
+            success_url="https://example.com/success",
+            cancel_url="https://example.com/cancel",
+        )
+
+    call_kwargs = mock_create.call_args.kwargs
+    assert call_kwargs["line_items"] == [{"price": "price_abc", "quantity": 5}]
+    assert call_kwargs["locale"] == "es"
+
+
+@pytest.mark.anyio
+async def test_create_checkout_session_with_trial_only() -> None:
+    mock_session = MagicMock()
+    mock_session.url = "https://checkout.stripe.com/pay/cs_trial_only"
+
+    with patch("stripe.checkout.Session.create", return_value=mock_session) as mock_create:
+        await create_checkout_session(
+            stripe_customer_id="cus_abc",
+            client_reference_id="user_123",
+            price_id="price_abc",
+            trial_period_days=7,
+            success_url="https://example.com/success",
+            cancel_url="https://example.com/cancel",
+        )
+
+    call_kwargs = mock_create.call_args.kwargs
+    sub_data = call_kwargs["subscription_data"]
+    assert sub_data["trial_period_days"] == 7
+    assert "metadata" not in sub_data
+
+
+@pytest.mark.anyio
+async def test_create_checkout_session_with_metadata_only() -> None:
+    mock_session = MagicMock()
+    mock_session.url = "https://checkout.stripe.com/pay/cs_meta"
+
+    with patch("stripe.checkout.Session.create", return_value=mock_session) as mock_create:
+        await create_checkout_session(
+            stripe_customer_id="cus_abc",
+            client_reference_id="user_123",
+            price_id="price_abc",
+            metadata={"plan": "pro"},
+            success_url="https://example.com/success",
+            cancel_url="https://example.com/cancel",
+        )
+
+    call_kwargs = mock_create.call_args.kwargs
+    sub_data = call_kwargs["subscription_data"]
+    assert sub_data["metadata"] == {"plan": "pro"}
+    assert "trial_period_days" not in sub_data
+
+
+@pytest.mark.anyio
 async def test_create_checkout_session_invalid_promo_code_raises() -> None:
     mock_list = MagicMock()
     mock_list.data = []
