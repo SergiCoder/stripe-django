@@ -7,10 +7,27 @@ from uuid import UUID
 
 import stripe
 
+from stripe_saas_core.domain.stripe_customer import StripeCustomer
+from stripe_saas_core.domain.user import User
 from stripe_saas_core.exceptions import UserNotFoundError
 from stripe_saas_core.repositories.customer import StripeCustomerRepository
 from stripe_saas_core.repositories.subscription import SubscriptionRepository
 from stripe_saas_core.repositories.user import UserRepository
+
+
+async def _load_user_and_customer(
+    user_id: UUID,
+    user_repo: UserRepository,
+    customer_repo: StripeCustomerRepository,
+) -> tuple[User, StripeCustomer | None]:
+    """Fetch user and customer in parallel, raising if user doesn't exist."""
+    user, customer = await asyncio.gather(
+        user_repo.get_by_id(user_id),
+        customer_repo.get_by_user_id(user_id),
+    )
+    if user is None:
+        raise UserNotFoundError(f"User {user_id} not found")
+    return user, customer
 
 
 async def delete_user_data(
@@ -29,12 +46,7 @@ async def delete_user_data(
     3. Delete our StripeCustomer record.
     4. Soft-delete the user (sets deleted_at).
     """
-    user, customer = await asyncio.gather(
-        user_repo.get_by_id(user_id),
-        customer_repo.get_by_user_id(user_id),
-    )
-    if user is None:
-        raise UserNotFoundError(f"User {user_id} not found")
+    _, customer = await _load_user_and_customer(user_id, user_repo, customer_repo)
 
     if customer:
         active_sub = await subscription_repo.get_active_for_customer(customer.id)
@@ -66,12 +78,7 @@ async def export_user_data(
 
     The response is suitable for sending directly to the user as a file download.
     """
-    user, customer = await asyncio.gather(
-        user_repo.get_by_id(user_id),
-        customer_repo.get_by_user_id(user_id),
-    )
-    if user is None:
-        raise UserNotFoundError(f"User {user_id} not found")
+    user, customer = await _load_user_and_customer(user_id, user_repo, customer_repo)
 
     result: dict[str, object] = {"user": user.model_dump(mode="json")}
     if customer:
