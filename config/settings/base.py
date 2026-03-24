@@ -83,10 +83,6 @@ INSTALLED_APPS = [
     "hijack",
     "hijack.contrib.admin",
     "apps.users",
-    "apps.billing",
-    "apps.orgs",
-    "apps.admin_panel",
-    "apps.dashboard",
 ]
 
 MIDDLEWARE = [
@@ -99,7 +95,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
-    "middleware.security.SecurityHeadersMiddleware",
+    # "middleware.security.SecurityHeadersMiddleware",  # TODO: PR 6
     "hijack.middleware.HijackUserMiddleware",
 ]
 
@@ -157,7 +153,7 @@ REST_FRAMEWORK = {
         "auth": "10/minute",
         "billing": "30/hour",
     },
-    "EXCEPTION_HANDLER": "middleware.exceptions.domain_exception_handler",
+    # "EXCEPTION_HANDLER": "middleware.exceptions.domain_exception_handler",  # TODO: PR 4
 }
 
 CORS_ALLOWED_ORIGINS = env.cors_allowed_origins
