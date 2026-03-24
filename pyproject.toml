@@ -9,7 +9,7 @@ description = "Django backend for Stripe SaaS"
 requires-python = ">=3.12"
 dependencies = [
     "stripe-saas-core",
-    "django>=5.0",
+    "django>=6.0",
     "djangorestframework>=3.15",
     "django-cors-headers>=4.3",
     "psycopg[binary]>=3.1",
@@ -18,7 +18,7 @@ dependencies = [
     "django-hijack>=3.4",       # user impersonation in admin
     "whitenoise>=6.7",
     "pyjwt>=2.8",
-    "uvicorn[standard]>=0.30",
+    "uvicorn[standard]>=0.40",
     "pydantic[email]>=2.12.5",
     "supabase>=2.0",
 ]
@@ -28,10 +28,10 @@ dev = [
     "pytest>=8.0",
     "pytest-django>=4.8",
     "testcontainers[postgres]>=4.0",
-    "mypy>=1.10",
-    "django-stubs>=5.0",
+    "mypy>=1.14",
+    "django-stubs>=6.0",
     "djangorestframework-stubs>=3.15",
-    "ruff>=0.4",
+    "ruff>=0.14",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -42,7 +42,7 @@ stripe-saas-core = { path = "core", editable = true }
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings.test"
-testpaths = ["tests"]
+testpaths = ["core/tests", "apps/users/tests"]
 filterwarnings = [
     "ignore:No directory at.*staticfiles:UserWarning",
 ]
@@ -67,6 +67,7 @@ ignore = []
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "ANN"]
+"apps/*/tests/**" = ["S101", "ANN"]
 "*/migrations/**" = ["ANN", "RUF", "E501"]
 
 [tool.coverage.run]
@@ -81,4 +82,5 @@ omit = [
 [dependency-groups]
 dev = [
     "pytest-cov>=7.0.0",
+    "pytest-django>=4.12.0",
 ]
