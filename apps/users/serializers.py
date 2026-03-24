@@ -33,17 +33,17 @@ class UpdateUserSerializer(serializers.Serializer[User]):
     def validate_preferred_locale(self, value: str) -> str:
         from stripe_saas_core.services.locale import SUPPORTED_LOCALES
 
-        if value not in SUPPORTED_LOCALES:
-            raise serializers.ValidationError(
-                f"Unsupported locale. Must be one of: {', '.join(sorted(SUPPORTED_LOCALES))}"
-            )
-        return value
+        return self._validate_in_set(value, SUPPORTED_LOCALES, "locale")
 
     def validate_preferred_currency(self, value: str) -> str:
         from stripe_saas_core.services.currency import SUPPORTED_CURRENCIES
 
-        if value not in SUPPORTED_CURRENCIES:
+        return self._validate_in_set(value, SUPPORTED_CURRENCIES, "currency")
+
+    @staticmethod
+    def _validate_in_set(value: str, allowed: set[str], label: str) -> str:
+        if value not in allowed:
             raise serializers.ValidationError(
-                f"Unsupported currency. Must be one of: {', '.join(sorted(SUPPORTED_CURRENCIES))}"
+                f"Unsupported {label}. Must be one of: {', '.join(sorted(allowed))}"
             )
         return value

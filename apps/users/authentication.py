@@ -5,11 +5,12 @@ from __future__ import annotations
 import jwt
 from django.conf import settings
 from django.core.cache import cache
+from django.db import IntegrityError
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.request import Request
 
-from apps.users.models import User
+from apps.users.models import AUTH_USER_CACHE_KEY, User
 
 _AUTH_CACHE_TTL = 60  # seconds
 
@@ -41,23 +42,15 @@ class SupabaseJWTAuthentication(BaseAuthentication):
             raise AuthenticationFailed("Token missing 'sub' claim.")
 
         if not payload.get("email_verified", False):
-            raise AuthenticationFailed("Email not verified.") from None
+            raise AuthenticationFailed("Email not verified.")
 
-        cache_key = f"auth_user:{supabase_uid}"
+        cache_key = AUTH_USER_CACHE_KEY.format(supabase_uid)
         user: User | None = cache.get(cache_key)
         if user is None:
             try:
-                user = User.objects.only(
-                    "id",
-                    "email",
-                    "supabase_uid",
-                    "full_name",
-                    "preferred_locale",
-                    "account_type",
-                    "is_active",
-                    "is_staff",
-                    "is_verified",
-                ).get(supabase_uid=supabase_uid, deleted_at__isnull=True, is_active=True)
+                user = User.objects.get(
+                    supabase_uid=supabase_uid, deleted_at__isnull=True, is_active=True
+                )
             except User.DoesNotExist:
                 email = str(payload.get("email", ""))
                 if not email:
@@ -65,10 +58,15 @@ class SupabaseJWTAuthentication(BaseAuthentication):
                 # Prevent resurrecting soft-deleted or deactivated users
                 if User.objects.filter(supabase_uid=supabase_uid).exists():
                     raise AuthenticationFailed("Account is deactivated.") from None
-                user, _ = User.objects.get_or_create(
-                    supabase_uid=supabase_uid,
-                    defaults={"email": email, "is_verified": True},
-                )
+                try:
+                    user, _ = User.objects.get_or_create(
+                        supabase_uid=supabase_uid,
+                        defaults={"email": email, "is_verified": True},
+                    )
+                except IntegrityError:
+                    raise AuthenticationFailed(
+                        "Email already associated with another account."
+                    ) from None
             cache.set(cache_key, user, timeout=_AUTH_CACHE_TTL)
 
         return (user, token)

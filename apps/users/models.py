@@ -11,6 +11,8 @@ from django.db import models
 
 from apps.users.managers import UserManager
 
+AUTH_USER_CACHE_KEY = "auth_user:{}"
+
 
 class AccountType(models.TextChoices):
     PERSONAL = "personal", "Personal"
@@ -53,8 +55,7 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     def save(self, *args: object, **kwargs: object) -> None:
         super().save(*args, **kwargs)
-        if not self.is_active or self.deleted_at is not None:
-            cache.delete(f"auth_user:{self.supabase_uid}")
+        cache.delete(AUTH_USER_CACHE_KEY.format(self.supabase_uid))
 
     def __str__(self) -> str:
         return self.email

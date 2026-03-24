@@ -27,5 +27,5 @@ async def aget_or_none[T](
     try:
         obj = await model_class.objects.aget(**kwargs)
         return to_domain(obj)
-    except model_class.DoesNotExist:
+    except (model_class.DoesNotExist, model_class.MultipleObjectsReturned):
         return None

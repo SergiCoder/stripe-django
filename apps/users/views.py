@@ -19,6 +19,16 @@ from helpers import get_user
 _user_repo = DjangoUserRepository()
 
 
+def _billing_repos() -> tuple:
+    """Lazy-import and instantiate billing repositories."""
+    from apps.billing.repositories import (
+        DjangoStripeCustomerRepository,
+        DjangoSubscriptionRepository,
+    )
+
+    return DjangoStripeCustomerRepository(), DjangoSubscriptionRepository()
+
+
 class AccountView(APIView):
     """GET /api/v1/account — return the current user's profile."""
 
@@ -42,17 +52,13 @@ class AccountView(APIView):
 
     def delete(self, request: Request) -> Response:
         """DELETE /api/v1/account — GDPR right to erasure."""
-        from apps.billing.repositories import (
-            DjangoStripeCustomerRepository,
-            DjangoSubscriptionRepository,
-        )
-
+        customer_repo, subscription_repo = _billing_repos()
         user = get_user(request)
         async_to_sync(delete_user_data)(
             user_id=user.id,
             user_repo=_user_repo,
-            customer_repo=DjangoStripeCustomerRepository(),
-            subscription_repo=DjangoSubscriptionRepository(),
+            customer_repo=customer_repo,
+            subscription_repo=subscription_repo,
         )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -61,19 +67,15 @@ class AccountExportView(APIView):
     """GET /api/v1/account/export — GDPR right of access."""
 
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]
-    throttle_scope = "account"
+    throttle_scope = "account_export"
 
     def get(self, request: Request) -> Response:
-        from apps.billing.repositories import (
-            DjangoStripeCustomerRepository,
-            DjangoSubscriptionRepository,
-        )
-
+        customer_repo, subscription_repo = _billing_repos()
         user = get_user(request)
         data = async_to_sync(export_user_data)(
             user_id=user.id,
             user_repo=_user_repo,
-            customer_repo=DjangoStripeCustomerRepository(),
-            subscription_repo=DjangoSubscriptionRepository(),
+            customer_repo=customer_repo,
+            subscription_repo=subscription_repo,
         )
         return Response(data)
