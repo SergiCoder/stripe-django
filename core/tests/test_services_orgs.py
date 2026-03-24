@@ -59,6 +59,16 @@ def test_member_cannot_manage_admin() -> None:
         check_can_manage_member(caller_role=OrgRole.MEMBER, target_role=OrgRole.ADMIN)
 
 
+def test_member_cannot_manage_owner() -> None:
+    with pytest.raises(InsufficientPermissionError):
+        check_can_manage_member(caller_role=OrgRole.MEMBER, target_role=OrgRole.OWNER)
+
+
+def test_owner_cannot_manage_owner() -> None:
+    with pytest.raises(InsufficientPermissionError):
+        check_can_manage_member(caller_role=OrgRole.OWNER, target_role=OrgRole.OWNER)
+
+
 # ── check_can_assign_role ────────────────────────────────────────────────────
 
 
@@ -92,3 +102,13 @@ def test_admin_cannot_assign_owner() -> None:
 def test_member_cannot_assign_member() -> None:
     with pytest.raises(InsufficientPermissionError):
         check_can_assign_role(caller_role=OrgRole.MEMBER, new_role=OrgRole.MEMBER)
+
+
+def test_member_cannot_assign_admin() -> None:
+    with pytest.raises(InsufficientPermissionError):
+        check_can_assign_role(caller_role=OrgRole.MEMBER, new_role=OrgRole.ADMIN)
+
+
+def test_member_cannot_assign_owner() -> None:
+    with pytest.raises(InsufficientPermissionError):
+        check_can_assign_role(caller_role=OrgRole.MEMBER, new_role=OrgRole.OWNER)
