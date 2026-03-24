@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from stripe_saas_core.exceptions import SubscriptionNotFoundError
+from stripe_saas_core.exceptions import InvalidPromoCodeError, SubscriptionNotFoundError
 from stripe_saas_core.services.billing import (
     cancel_subscription,
     create_billing_portal_session,
@@ -183,6 +183,23 @@ async def test_create_checkout_session_with_trial_and_metadata() -> None:
     sub_data = call_kwargs["subscription_data"]
     assert sub_data["trial_period_days"] == 14
     assert sub_data["metadata"] == {"plan": "pro"}
+
+
+@pytest.mark.anyio
+async def test_create_checkout_session_invalid_promo_code_raises() -> None:
+    mock_list = MagicMock()
+    mock_list.data = []
+
+    with patch("stripe.PromotionCode.list", return_value=mock_list):
+        with pytest.raises(InvalidPromoCodeError):
+            await create_checkout_session(
+                stripe_customer_id="cus_abc",
+                client_reference_id="user_123",
+                price_id="price_abc",
+                promo_code="BADCODE",
+                success_url="https://example.com/success",
+                cancel_url="https://example.com/cancel",
+            )
 
 
 # ── create_billing_portal_session ─────────────────────────────────────────────

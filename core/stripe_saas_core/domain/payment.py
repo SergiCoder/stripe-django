@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PaymentStatus(StrEnum):
@@ -30,7 +30,7 @@ class Payment(BaseModel):
     currency: str
     status: PaymentStatus
     description: str | None = None
-    metadata: dict[str, str] = {}
+    metadata: dict[str, str] = Field(default_factory=dict)
     created_at: datetime
 
 

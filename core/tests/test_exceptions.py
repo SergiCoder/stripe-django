@@ -14,6 +14,7 @@ from stripe_saas_core.exceptions import (
     SubscriptionAlreadyActiveError,
     SubscriptionNotFoundError,
     UserNotFoundError,
+    WebhookDataError,
     WebhookVerificationError,
 )
 
@@ -27,6 +28,7 @@ _ALL_EXCEPTIONS = [
     InsufficientPermissionError,
     OrgMemberNotFoundError,
     WebhookVerificationError,
+    WebhookDataError,
 ]
 
 
