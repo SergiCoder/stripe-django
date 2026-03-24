@@ -39,3 +39,7 @@ class OrgMemberNotFoundError(DomainError):
 
 class WebhookVerificationError(DomainError):
     """Stripe webhook signature verification failed."""
+
+
+class WebhookDataError(DomainError):
+    """Webhook event references unknown entities (customer, price, etc.)."""

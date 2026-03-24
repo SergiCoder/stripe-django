@@ -10,7 +10,7 @@ import pytest
 import stripe
 
 from stripe_saas_core.domain.subscription import SubscriptionStatus
-from stripe_saas_core.exceptions import WebhookVerificationError
+from stripe_saas_core.exceptions import WebhookDataError, WebhookVerificationError
 from stripe_saas_core.services.webhooks import WebhookRepos, handle_stripe_event
 from tests.conftest import (
     InMemoryPlanRepository,
@@ -251,7 +251,7 @@ async def test_sync_subscription_customer_not_found_marks_failed() -> None:
     event = _sub_event("customer.subscription.created", stripe_customer_id="cus_unknown")
 
     with patch("stripe.Webhook.construct_event", return_value=event):
-        with pytest.raises(ValueError, match="Unknown customer"):
+        with pytest.raises(WebhookDataError, match="Unknown customer"):
             await handle_stripe_event(b"payload", "sig", "secret", repos)
 
     saved = event_repo._store["evt_webhook"]
@@ -275,7 +275,7 @@ async def test_sync_subscription_price_not_found_marks_failed() -> None:
     )
 
     with patch("stripe.Webhook.construct_event", return_value=event):
-        with pytest.raises(ValueError, match="Unknown price"):
+        with pytest.raises(WebhookDataError, match="Unknown price"):
             await handle_stripe_event(b"payload", "sig", "secret", repos)
 
     saved = event_repo._store["evt_webhook"]

@@ -86,44 +86,49 @@ async def _dispatch(event: stripe.Event, repos: WebhookRepos) -> None:
             logger.debug("Unhandled Stripe event type: %s", event["type"])
 
 
-async def _sync_subscription(sub_data: dict[str, object], repos: WebhookRepos) -> None:
+def _extract_discount(sub_data: dict[str, Any]) -> tuple[str | None, int | None, datetime | None]:
+    """Extract promotion code, discount percent, and discount end from raw sub data."""
+    discount: Any = sub_data.get("discount")
+    if not discount:
+        return None, None, None
+
+    raw_promo = discount.get("promotion_code")
+    promotion_code_id = str(raw_promo) if raw_promo else None
+
+    coupon: dict[str, Any] = cast(dict[str, Any], discount.get("coupon") or {})
+    discount_percent = int(coupon["percent_off"]) if coupon.get("percent_off") else None
+
+    raw_end = discount.get("end")
+    discount_end_at = datetime.fromtimestamp(int(raw_end), tz=UTC) if raw_end else None
+
+    return promotion_code_id, discount_percent, discount_end_at
+
+
+def _ts_to_dt(value: int | float | None) -> datetime | None:
+    """Convert an optional Unix timestamp to a UTC datetime."""
+    return datetime.fromtimestamp(int(value), tz=UTC) if value else None
+
+
+async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> None:
     """Upsert a Stripe subscription into the local DB from raw event data."""
+    from stripe_saas_core.exceptions import WebhookDataError
+
     stripe_customer_str = str(sub_data["customer"])
     customer = await repos.customers.get_by_stripe_id(stripe_customer_str)
     if customer is None:
-        msg = f"Unknown customer {stripe_customer_str}"
-        logger.warning("Received subscription event for %s", msg)
-        raise ValueError(msg)
+        logger.warning("Received subscription event for unknown customer %s", stripe_customer_str)
+        raise WebhookDataError(f"Unknown customer {stripe_customer_str}")
 
-    items_data: list[Any] = sub_data["items"]["data"]  # type: ignore[index]  # sub_data is dict[str, object]; nested indexing requires ignoring object subscript
-    first_item: dict[str, Any] = cast(dict[str, Any], items_data[0])
+    first_item: dict[str, Any] = sub_data["items"]["data"][0]
     price_id = str(first_item["price"]["id"])
     plan_price = await repos.plans.get_price_by_stripe_id(price_id)
     if plan_price is None:
-        msg = f"Unknown price {price_id}"
-        logger.warning("Received subscription event for %s", msg)
-        raise ValueError(msg)
+        logger.warning("Received subscription event for unknown price %s", price_id)
+        raise WebhookDataError(f"Unknown price {price_id}")
 
     stripe_sub_id = str(sub_data["id"])
     existing = await repos.subscriptions.get_by_stripe_id(stripe_sub_id)
-
-    # Extract optional discount fields
-    discount: Any = sub_data.get("discount")
-    promotion_code_id: str | None = None
-    discount_percent: int | None = None
-    discount_end_at: datetime | None = None
-    if discount:
-        raw_promo = discount.get("promotion_code")
-        promotion_code_id = str(raw_promo) if raw_promo else None
-        coupon: dict[str, Any] = cast(dict[str, Any], discount.get("coupon") or {})
-        if coupon.get("percent_off"):
-            discount_percent = int(coupon["percent_off"])
-        raw_end = discount.get("end")
-        if raw_end:
-            discount_end_at = datetime.fromtimestamp(int(raw_end), tz=UTC)
-
-    trial_end = sub_data.get("trial_end")
-    canceled_at_ts = sub_data.get("canceled_at")
+    promotion_code_id, discount_percent, discount_end_at = _extract_discount(sub_data)
 
     subscription = Subscription(
         id=existing.id if existing else uuid4(),
@@ -135,29 +140,17 @@ async def _sync_subscription(sub_data: dict[str, object], repos: WebhookRepos) -
         promotion_code_id=promotion_code_id,
         discount_percent=discount_percent,
         discount_end_at=discount_end_at,
-        trial_ends_at=(
-            datetime.fromtimestamp(int(trial_end), tz=UTC) if trial_end else None  # type: ignore[call-overload]  # trial_end is object; int(object) doesn't match int(SupportsInt) overload
-        ),
-        current_period_start=datetime.fromtimestamp(
-            int(sub_data["current_period_start"]),  # type: ignore[call-overload]  # value is object; int(object) doesn't match overload
-            tz=UTC,
-        ),
-        current_period_end=datetime.fromtimestamp(
-            int(sub_data["current_period_end"]),  # type: ignore[call-overload]  # same: object from dict[str, object]
-            tz=UTC,
-        ),
-        canceled_at=(
-            datetime.fromtimestamp(int(canceled_at_ts), tz=UTC)  # type: ignore[call-overload]  # same: object from dict[str, object]
-            if canceled_at_ts
-            else None
-        ),
+        trial_ends_at=_ts_to_dt(sub_data.get("trial_end")),
+        current_period_start=_ts_to_dt(sub_data["current_period_start"]),  # type: ignore[arg-type]
+        current_period_end=_ts_to_dt(sub_data["current_period_end"]),  # type: ignore[arg-type]
+        canceled_at=_ts_to_dt(sub_data.get("canceled_at")),
         created_at=existing.created_at if existing else datetime.now(UTC),
     )
 
     await repos.subscriptions.save(subscription)
 
 
-async def _on_subscription_deleted(sub_data: dict[str, object], repos: WebhookRepos) -> None:
+async def _on_subscription_deleted(sub_data: dict[str, Any], repos: WebhookRepos) -> None:
     """Mark a subscription as canceled when Stripe hard-deletes it."""
     stripe_sub_id = str(sub_data["id"])
     existing = await repos.subscriptions.get_by_stripe_id(stripe_sub_id)
@@ -174,12 +167,12 @@ async def _on_subscription_deleted(sub_data: dict[str, object], repos: WebhookRe
     await repos.subscriptions.save(canceled)
 
 
-async def _on_invoice_paid(invoice_data: dict[str, object]) -> None:
+async def _on_invoice_paid(invoice_data: dict[str, Any]) -> None:
     # TODO: persist Invoice record, send receipt email via Celery task
     logger.info("Invoice paid: %s", invoice_data.get("id"))
 
 
-async def _on_invoice_failed(invoice_data: dict[str, object]) -> None:
+async def _on_invoice_failed(invoice_data: dict[str, Any]) -> None:
     # TODO: trigger dunning email via Celery task
     # Subscription status (past_due / unpaid) is synced via the
     # customer.subscription.updated event Stripe fires alongside this one.
