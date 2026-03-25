@@ -1932,7 +1932,7 @@ wheels = [
 
 [[package]]
 name = "stripe-saas-core"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "core" }
 dependencies = [
     { name = "pydantic", extra = ["email"] },
@@ -1957,7 +1957,7 @@ dev = [{ name = "pytest-cov", specifier = ">=7.0.0" }]
 
 [[package]]
 name = "stripe-saas-django"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "celery", extra = ["redis"] },
