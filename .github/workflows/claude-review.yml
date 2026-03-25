@@ -94,7 +94,11 @@ jobs:
 
             | Profile | Critical | High | Medium | Low |
             |---|---|---|---|---|
-            | ... | ... | ... | ... | ... |
+            | Security | ... | ... | ... | ... |
+            | Django | ... | ... | ... | ... |
+            | Performance | ... | ... | ... | ... |
+            | Stripe | ... | ... | ... | ... |
+            | Testing | ... | ... | ... | ... |
             | **Total** | **X** | **X** | **X** | **X** |
 
             If there are no findings, post: "No issues found. Ready to merge."
