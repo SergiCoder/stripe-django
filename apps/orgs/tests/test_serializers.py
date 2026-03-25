@@ -157,6 +157,7 @@ class TestUpdateMemberSerializer:
         assert "role" in ser.errors
 
 
+@pytest.mark.django_db
 class TestCreateOrgSerializerEdgeCases:
     def test_invalid_logo_url_rejected(self):
         ser = CreateOrgSerializer(data={"name": "Org", "slug": "org-slug", "logo_url": "not-a-url"})
