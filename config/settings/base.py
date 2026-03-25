@@ -84,6 +84,7 @@ INSTALLED_APPS = [
     "hijack.contrib.admin",
     "apps.users",
     "apps.billing",
+    "apps.orgs",
 ]
 
 MIDDLEWARE = [

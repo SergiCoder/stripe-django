@@ -1,0 +1,186 @@
+"""Organisation and membership API views."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from uuid import UUID
+
+from django.shortcuts import get_object_or_404
+from rest_framework import status
+from rest_framework.pagination import LimitOffsetPagination
+from rest_framework.request import Request
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from stripe_saas_core.exceptions import InsufficientPermissionError, OrgNotFoundError
+from stripe_saas_core.services.orgs import check_can_assign_role, check_can_manage_member
+
+from apps.orgs.models import Org, OrgMember, OrgRole
+from apps.orgs.serializers import (
+    AddMemberSerializer,
+    CreateOrgSerializer,
+    OrgMemberSerializer,
+    OrgSerializer,
+    UpdateMemberSerializer,
+    UpdateOrgSerializer,
+)
+from helpers import get_user
+
+_ADMIN_OR_ABOVE = (OrgRole.OWNER, OrgRole.ADMIN)
+_OWNER_ONLY = (OrgRole.OWNER,)
+
+
+def _get_org_and_member(
+    user_id: UUID,
+    org_id: UUID,
+    allowed_roles: tuple[OrgRole, ...] | None = None,
+) -> tuple[Org, OrgMember]:
+    """Fetch an org and verify the user's membership, optionally checking role.
+
+    Raises InsufficientPermissionError if the user is not a member or lacks the
+    required role.
+    """
+    org = Org.objects.filter(id=org_id, deleted_at__isnull=True).first()
+    if org is None:
+        raise OrgNotFoundError(org_id)
+    try:
+        member = OrgMember.objects.get(org=org, user_id=user_id)
+    except OrgMember.DoesNotExist as exc:
+        raise InsufficientPermissionError("Access denied.") from exc
+    if allowed_roles is not None and member.role not in allowed_roles:
+        raise InsufficientPermissionError("Insufficient permissions for this action.")
+    return org, member
+
+
+class OrgListCreateView(APIView):
+    """GET /api/v1/orgs/ — list user's orgs; POST — create a new org."""
+
+    def get(self, request: Request) -> Response:
+        user = get_user(request)
+        orgs = Org.objects.filter(
+            id__in=OrgMember.objects.filter(user=user).values("org_id"),
+            deleted_at__isnull=True,
+        ).select_related("created_by")[:100]
+        return Response(OrgSerializer(orgs, many=True).data)
+
+    def post(self, request: Request) -> Response:
+        user = get_user(request)
+        ser = CreateOrgSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        org = Org.objects.create(
+            name=ser.validated_data["name"],
+            slug=ser.validated_data["slug"],
+            logo_url=ser.validated_data.get("logo_url"),
+            created_by=user,
+        )
+        OrgMember.objects.create(
+            org=org,
+            user=user,
+            role=OrgRole.OWNER,
+        )
+        return Response(OrgSerializer(org).data, status=status.HTTP_201_CREATED)
+
+
+class OrgDetailView(APIView):
+    """GET/PATCH/DELETE /api/v1/orgs/{org_id}/."""
+
+    def get(self, request: Request, org_id: UUID) -> Response:
+        user = get_user(request)
+        org, _ = _get_org_and_member(user.id, org_id)
+        return Response(OrgSerializer(org).data)
+
+    def patch(self, request: Request, org_id: UUID) -> Response:
+        user = get_user(request)
+        org, _ = _get_org_and_member(user.id, org_id, allowed_roles=_ADMIN_OR_ABOVE)
+        ser = UpdateOrgSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        for field, value in ser.validated_data.items():
+            setattr(org, field, value)
+        org.save(update_fields=list(ser.validated_data.keys()))
+        return Response(OrgSerializer(org).data)
+
+    def delete(self, request: Request, org_id: UUID) -> Response:
+        user = get_user(request)
+        org, _ = _get_org_and_member(user.id, org_id, allowed_roles=_OWNER_ONLY)
+        org.deleted_at = datetime.now(UTC)
+        org.save(update_fields=["deleted_at"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class OrgMemberListView(APIView):
+    """GET /api/v1/orgs/{org_id}/members/ — list members; POST — add member."""
+
+    def get(self, request: Request, org_id: UUID) -> Response:
+        user = get_user(request)
+        org, _ = _get_org_and_member(user.id, org_id)
+        queryset = OrgMember.objects.filter(org=org).select_related("user")
+        paginator = LimitOffsetPagination()
+        paginator.default_limit = 50
+        paginator.max_limit = 200
+        page = paginator.paginate_queryset(queryset, request)
+        return paginator.get_paginated_response(OrgMemberSerializer(page, many=True).data)
+
+    def post(self, request: Request, org_id: UUID) -> Response:
+        user = get_user(request)
+        org, caller = _get_org_and_member(user.id, org_id, allowed_roles=_ADMIN_OR_ABOVE)
+        ser = AddMemberSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        # Prevent escalation: cannot assign a role at or above caller's own level
+        check_can_assign_role(caller_role=caller.role, new_role=ser.validated_data["role"])
+
+        from apps.users.models import User as UserModel
+
+        target_user = get_object_or_404(UserModel, id=ser.validated_data["user_id"])
+        member, created = OrgMember.objects.get_or_create(
+            org=org,
+            user=target_user,
+            defaults={
+                "role": ser.validated_data["role"],
+                "is_billing": ser.validated_data["is_billing"],
+            },
+        )
+        code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        return Response(OrgMemberSerializer(member).data, status=code)
+
+
+class OrgMemberDetailView(APIView):
+    """PATCH/DELETE /api/v1/orgs/{org_id}/members/{user_id}/."""
+
+    def patch(self, request: Request, org_id: UUID, member_user_id: UUID) -> Response:
+        user = get_user(request)
+        _, caller = _get_org_and_member(user.id, org_id, allowed_roles=_ADMIN_OR_ABOVE)
+        target = get_object_or_404(OrgMember, org_id=org_id, user_id=member_user_id)
+
+        # Only OWNER can modify roles at or above ADMIN level
+        check_can_manage_member(caller_role=caller.role, target_role=target.role)
+
+        ser = UpdateMemberSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        # Prevent escalation: new role cannot exceed caller's own role
+        new_role = ser.validated_data.get("role")
+        if new_role:
+            check_can_assign_role(caller_role=caller.role, new_role=new_role)
+
+        for field, value in ser.validated_data.items():
+            setattr(target, field, value)
+        target.save(update_fields=list(ser.validated_data.keys()))
+        return Response(OrgMemberSerializer(target).data)
+
+    def delete(self, request: Request, org_id: UUID, member_user_id: UUID) -> Response:
+        user = get_user(request)
+        _, caller = _get_org_and_member(user.id, org_id, allowed_roles=_ADMIN_OR_ABOVE)
+        target = get_object_or_404(OrgMember, org_id=org_id, user_id=member_user_id)
+
+        # Prevent owner from removing themselves (would leave org ownerless)
+        if target.user_id == user.id and target.role == OrgRole.OWNER:
+            raise InsufficientPermissionError(
+                "Owner cannot remove themselves. Transfer ownership first."
+            )
+
+        # Cannot remove members at or above your own role level
+        check_can_manage_member(caller_role=caller.role, target_role=target.role)
+
+        target.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
