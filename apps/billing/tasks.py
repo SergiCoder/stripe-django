@@ -51,4 +51,4 @@ def process_stripe_webhook(self: object, payload: str, signature: str) -> None:
             event_type,
             exc,
         )
-        raise self.retry(exc=exc, countdown=2**self.request.retries) from exc  # type: ignore[attr-defined]
+        raise self.retry(exc=exc, countdown=2**self.request.retries) from exc  # type: ignore[attr-defined]  # self is typed as object; retry/request attrs are injected by Celery at runtime
