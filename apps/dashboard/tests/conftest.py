@@ -26,7 +26,6 @@ def user(db):
         email="dashboard@example.com",
         supabase_uid="sup_dashboard",
         full_name="Dashboard User",
-        password="testpass123",
     )
 
 
@@ -36,7 +35,6 @@ def staff_user(db):
         email="staff@example.com",
         supabase_uid="sup_staff",
         full_name="Staff User",
-        password="testpass123",
         is_staff=True,
         is_superuser=True,
     )

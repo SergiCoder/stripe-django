@@ -46,7 +46,7 @@ class _Env(BaseSettings):
     enable_session_auth: bool = False  # dev-only: allows browsable API via Django session
 
 
-env = _Env()  # type: ignore[call-arg]
+env = _Env()  # type: ignore[call-arg]  # pydantic-settings reads fields from env vars at construction; mypy sees no positional args but none are needed
 
 
 def _parse_db_url(url: str) -> dict[str, object]:

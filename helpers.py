@@ -25,7 +25,7 @@ def get_user(request: Request) -> User:
 async def aget_or_none[T](
     model_class: type[models.Model],
     to_domain: Callable[..., T],
-    **kwargs: Any,  # noqa: ANN401
+    **kwargs: Any,  # noqa: ANN401  # kwargs forwarded to aget(); heterogeneous ORM filter args by design
 ) -> T | None:
     """Fetch a single ORM object and convert to domain, or return None."""
     manager: Manager[models.Model] = model_class._default_manager

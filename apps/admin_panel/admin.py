@@ -16,7 +16,7 @@ admin.site.unregister(User)
 
 
 @admin.register(User)
-class UserAdminExtended(BaseUserAdmin):  # type: ignore[type-arg]
+class UserAdminExtended(BaseUserAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic but BaseUserAdmin doesn't declare its type parameter
     list_display = (
         "email",
         "full_name",
@@ -32,7 +32,7 @@ class UserAdminExtended(BaseUserAdmin):  # type: ignore[type-arg]
     readonly_fields = ("id", "supabase_uid", "created_at", "deleted_at")
 
     def get_queryset(self, request: HttpRequest) -> QuerySet[User]:
-        qs = super().get_queryset(request)  # type: ignore[misc]
+        qs = super().get_queryset(request)  # type: ignore[misc]  # django-stubs types get_queryset as returning QuerySet[Any]; we narrow to QuerySet[User]
         customer_sub = Subscription.objects.filter(
             stripe_customer__user=OuterRef("pk"),
             status__in=ACTIVE_SUBSCRIPTION_STATUSES,
