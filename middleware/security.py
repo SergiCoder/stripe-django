@@ -26,13 +26,16 @@ class SecurityHeadersMiddleware:
         if "text/html" in response.get("Content-Type", ""):
             if settings.DEBUG and request.path.startswith(_SWAGGER_PATHS):
                 cdn = "https://cdn.jsdelivr.net"
+                redoc = "https://cdn.redoc.ly"
                 fonts = "https://fonts.googleapis.com https://fonts.gstatic.com"
                 response["Content-Security-Policy"] = (
                     f"default-src 'self'; "
                     f"script-src 'self' 'unsafe-inline' {cdn}; "
                     f"style-src 'self' 'unsafe-inline' {cdn} {fonts}; "
                     f"font-src 'self' {fonts}; "
-                    f"img-src 'self' data: {cdn}"
+                    f"img-src 'self' data: {cdn} {redoc}; "
+                    f"worker-src 'self' blob:; "
+                    f"connect-src 'self' {cdn}"
                 )
             else:
                 # unsafe-inline for style-src: required by DRF browsable API
