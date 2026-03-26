@@ -45,6 +45,42 @@ class UserAdminExtended(BaseUserAdmin):  # type: ignore[type-arg]  # django-stub
     search_fields = ("email", "full_name", "supabase_uid")
     ordering = ("-created_at",)
     readonly_fields = ("id", "supabase_uid", "created_at", "deleted_at")
+    fieldsets = (
+        (None, {"fields": ("email", "password")}),
+        (
+            "Profile",
+            {
+                "fields": (
+                    "full_name",
+                    "avatar_url",
+                    "account_type",
+                    "preferred_locale",
+                    "preferred_currency",
+                )
+            },
+        ),
+        (
+            "Permissions",
+            {
+                "fields": (
+                    "is_active",
+                    "is_staff",
+                    "is_superuser",
+                    "is_verified",
+                    "groups",
+                    "user_permissions",
+                )
+            },
+        ),
+        ("External", {"fields": ("id", "supabase_uid")}),
+        ("Dates", {"fields": ("created_at", "deleted_at")}),
+    )
+    add_fieldsets = (
+        (
+            None,
+            {"classes": ("wide",), "fields": ("email", "supabase_uid", "password1", "password2")},
+        ),
+    )
 
     def get_queryset(self, request: HttpRequest) -> QuerySet[User]:
         qs = super().get_queryset(request)  # type: ignore[misc]  # django-stubs types get_queryset as returning QuerySet[Any]; we narrow to QuerySet[User]
