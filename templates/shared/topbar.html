@@ -16,8 +16,7 @@
     <div class="topbar-links">
       {% if topbar_show_user or request.user.is_hijacked %}
         <span class="topbar-user">
-          <span class="topbar-user-id">{{ request.user.id }}</span>
-          &nbsp;·&nbsp;{{ request.user.email }}
+          {{ request.user.email }}
           &nbsp;·&nbsp;<span class="user-name">{{ request.user.full_name|default:"—" }}</span>
         </span>
       {% elif not request.user.is_hijacked %}

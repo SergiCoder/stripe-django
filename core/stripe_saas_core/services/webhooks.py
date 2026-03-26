@@ -44,7 +44,7 @@ async def handle_stripe_event(
     from stripe_saas_core.exceptions import WebhookVerificationError
 
     try:
-        event = stripe.Webhook.construct_event(payload, signature, webhook_secret)  # type: ignore[no-untyped-call]  # Stripe stub missing return type annotation
+        event = stripe.Webhook.construct_event(payload, signature, webhook_secret)  # type: ignore[no-untyped-call]
     except stripe.SignatureVerificationError as exc:
         raise WebhookVerificationError("Invalid Stripe webhook signature") from exc
 

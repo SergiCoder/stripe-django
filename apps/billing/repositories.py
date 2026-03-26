@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from stripe_saas_core.domain.stripe_customer import StripeCustomer
@@ -57,7 +57,7 @@ class DjangoStripeCustomerRepository:
         return await aget_or_none(StripeCustomerModel, self._to_domain, org_id=org_id)
 
     async def save(self, customer: StripeCustomer) -> StripeCustomer:
-        lookup: dict[str, object] = {}
+        lookup: dict[str, Any] = {}
         if customer.user_id:
             lookup["user_id"] = customer.user_id
         elif customer.org_id:
@@ -74,7 +74,7 @@ class DjangoStripeCustomerRepository:
             defaults["org_id"] = customer.org_id
 
         await StripeCustomerModel.objects.aupdate_or_create(
-            **lookup,  # type: ignore[arg-type]
+            **lookup,
             defaults=defaults,
         )
         return customer
@@ -247,7 +247,9 @@ class DjangoStripeEventRepository:
         capped = min(limit, 100)
         return [
             self._to_domain(obj)
-            async for obj in StripeEventModel.objects.order_by("-created_at")[:capped]
+            async for obj in StripeEventModel.objects.defer("payload").order_by("-created_at")[
+                :capped
+            ]
         ]
 
 

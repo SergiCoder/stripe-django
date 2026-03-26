@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import secrets
+import string
 from datetime import UTC, datetime, timedelta
 
 from django.core.management.base import BaseCommand
@@ -256,12 +258,16 @@ class Command(BaseCommand):
         self._period_start = now - timedelta(days=15)
         self._period_end = now + timedelta(days=15)
 
+        alphabet = string.ascii_letters + string.digits + string.punctuation
+        self._seed_password = "".join(secrets.choice(alphabet) for _ in range(20))
+
         with transaction.atomic():
             plans = self._seed_plans()
             users = self._seed_users(plans)
             self._seed_orgs(plans, users)
 
         self.stdout.write(self.style.SUCCESS("Dev data seeded successfully."))
+        self.stdout.write(f"  Seed password (all users): {self._seed_password}")
 
     # ------------------------------------------------------------------
 
@@ -316,7 +322,7 @@ class Command(BaseCommand):
                 },
             )
             if created:
-                user.set_password("Test1234!")
+                user.set_password(self._seed_password)
                 user.save(update_fields=["password"])
                 self.stdout.write(f"  + User: {user.full_name} <{user.email}>")
 
@@ -329,23 +335,14 @@ class Command(BaseCommand):
             )
 
             # Subscription
-            plan = plans[u["plan_key"]]
-            trial_days = u.get("trial_days_from_now")
-            canceled_days = u.get("canceled_days_ago")
-            Subscription.objects.get_or_create(
+            self._seed_subscription(
                 stripe_id=u["sub_stripe_id"],
-                defaults={
-                    "stripe_customer": customer,
-                    "status": u["sub_status"],
-                    "plan": plan,
-                    "quantity": 1,
-                    "current_period_start": self._period_start,
-                    "current_period_end": self._period_end,
-                    "trial_ends_at": self._now + timedelta(days=trial_days) if trial_days else None,
-                    "canceled_at": (
-                        self._now - timedelta(days=canceled_days) if canceled_days else None
-                    ),
-                },
+                customer=customer,
+                plan=plans[u["plan_key"]],
+                status=u["sub_status"],
+                quantity=1,
+                trial_days=u.get("trial_days_from_now"),
+                canceled_days_ago=u.get("canceled_days_ago"),
             )
 
         return user_map
@@ -384,17 +381,38 @@ class Command(BaseCommand):
             )
 
             # Subscription
-            plan = plans[o["plan_key"]]
-            trial_days = o.get("trial_days_from_now")
-            Subscription.objects.get_or_create(
+            self._seed_subscription(
                 stripe_id=o["sub_stripe_id"],
-                defaults={
-                    "stripe_customer": customer,
-                    "status": o["sub_status"],
-                    "plan": plan,
-                    "quantity": o["seats"],
-                    "current_period_start": self._period_start,
-                    "current_period_end": self._period_end,
-                    "trial_ends_at": self._now + timedelta(days=trial_days) if trial_days else None,
-                },
+                customer=customer,
+                plan=plans[o["plan_key"]],
+                status=o["sub_status"],
+                quantity=o["seats"],
+                trial_days=o.get("trial_days_from_now"),
             )
+
+    def _seed_subscription(
+        self,
+        *,
+        stripe_id: str,
+        customer: StripeCustomer,
+        plan: Plan,
+        status: SubscriptionStatus,
+        quantity: int,
+        trial_days: int | None = None,
+        canceled_days_ago: int | None = None,
+    ) -> None:
+        Subscription.objects.get_or_create(
+            stripe_id=stripe_id,
+            defaults={
+                "stripe_customer": customer,
+                "status": status,
+                "plan": plan,
+                "quantity": quantity,
+                "current_period_start": self._period_start,
+                "current_period_end": self._period_end,
+                "trial_ends_at": self._now + timedelta(days=trial_days) if trial_days else None,
+                "canceled_at": (
+                    self._now - timedelta(days=canceled_days_ago) if canceled_days_ago else None
+                ),
+            },
+        )
