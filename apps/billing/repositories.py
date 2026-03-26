@@ -253,13 +253,12 @@ class DjangoStripeEventRepository:
         await StripeEventModel.objects.filter(stripe_id=stripe_id).aupdate(error=error)
 
     async def list_recent(self, limit: int = 50) -> list[StripeEvent]:
+        from asgiref.sync import sync_to_async
+
         capped = min(limit, 100)
-        return [
-            self._to_domain(obj)
-            async for obj in StripeEventModel.objects.defer("payload").order_by("-created_at")[
-                :capped
-            ]
-        ]
+        qs = StripeEventModel.objects.order_by("-created_at")[:capped]
+        objs = await sync_to_async(list)(qs)
+        return [self._to_domain(obj) for obj in objs]
 
 
 def get_webhook_repos() -> WebhookRepos:
