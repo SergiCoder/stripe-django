@@ -1,5 +1,8 @@
 """Extended Django admin — re-registers User with subscription status column and sets site_url to /dashboard/."""  # noqa: E501
 
+from typing import Any
+
+from django.conf import settings
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.db.models import OuterRef, QuerySet, Subquery
@@ -11,6 +14,17 @@ from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, Subscription, Subs
 from apps.users.models import User
 
 admin.site.site_url = "/dashboard/"
+
+_original_each_context = admin.site.each_context
+
+
+def _each_context_with_api_docs(request: HttpRequest) -> dict[str, Any]:
+    ctx = _original_each_context(request)
+    ctx["show_api_docs"] = settings.DEBUG
+    return ctx
+
+
+admin.site.each_context = _each_context_with_api_docs  # type: ignore[assignment]
 
 # Re-register User admin to show subscription status
 admin.site.unregister(User)

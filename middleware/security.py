@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from django.conf import settings
 from django.http import HttpRequest, HttpResponse
+
+_SWAGGER_PATHS = ("/api/docs/", "/api/redoc/", "/api/schema/")
 
 
 class SecurityHeadersMiddleware:
@@ -21,8 +24,19 @@ class SecurityHeadersMiddleware:
         response["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
         # X-XSS-Protection intentionally omitted — deprecated and can cause vulnerabilities
         if "text/html" in response.get("Content-Type", ""):
-            # unsafe-inline for style-src: required by DRF browsable API
-            response["Content-Security-Policy"] = (
-                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
-            )
+            if settings.DEBUG and request.path.startswith(_SWAGGER_PATHS):
+                cdn = "https://cdn.jsdelivr.net"
+                fonts = "https://fonts.googleapis.com https://fonts.gstatic.com"
+                response["Content-Security-Policy"] = (
+                    f"default-src 'self'; "
+                    f"script-src 'self' 'unsafe-inline' {cdn}; "
+                    f"style-src 'self' 'unsafe-inline' {cdn} {fonts}; "
+                    f"font-src 'self' {fonts}; "
+                    f"img-src 'self' data: {cdn}"
+                )
+            else:
+                # unsafe-inline for style-src: required by DRF browsable API
+                response["Content-Security-Policy"] = (
+                    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+                )
         return response
