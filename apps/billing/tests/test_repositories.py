@@ -64,10 +64,38 @@ class TestDjangoStripeCustomerRepository:
         result = async_to_sync(repo.get_by_org_id)(org.id)
         assert result is not None
         assert result.stripe_id == "cus_org_test"
+        assert result.org_id == org.id
 
     def test_get_by_org_id_not_found(self, repo):
         result = async_to_sync(repo.get_by_org_id)(uuid4())
         assert result is None
+
+    def test_save_creates_new_for_org(self, repo, db):
+        from stripe_saas_core.domain.stripe_customer import (
+            StripeCustomer as DomainCustomer,
+        )
+
+        from apps.orgs.models import Org
+        from apps.users.models import User
+
+        owner = User.objects.create_user(
+            email="save_org_owner@example.com", supabase_uid="sup_save_org"
+        )
+        org = Org.objects.create(name="Save Org", slug="save-org", created_by=owner)
+        customer = DomainCustomer(
+            id=uuid4(),
+            stripe_id="cus_org_save_123",
+            user_id=None,
+            org_id=org.id,
+            livemode=False,
+            created_at=datetime.now(UTC),
+        )
+        saved = async_to_sync(repo.save)(customer)
+        assert saved.stripe_id == "cus_org_save_123"
+        assert StripeCustomer.objects.filter(stripe_id="cus_org_save_123").exists()
+        db_obj = StripeCustomer.objects.get(stripe_id="cus_org_save_123")
+        assert db_obj.org_id == org.id
+        assert db_obj.user_id is None
 
     def test_save_creates_new(self, repo, user):
         from stripe_saas_core.domain.stripe_customer import (
