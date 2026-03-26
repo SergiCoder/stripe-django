@@ -21,11 +21,14 @@
 
 name: Claude Code Review
 
+# DISABLED: API credits exhausted. Re-enable triggers when credits are topped up.
+# on:
+#   pull_request:
+#     types: [opened, reopened]
+#   issue_comment:
+#     types: [created]
+#   workflow_dispatch:
 on:
-  pull_request:
-    types: [opened, reopened]
-  issue_comment:
-    types: [created]
   workflow_dispatch:
 
 permissions:
