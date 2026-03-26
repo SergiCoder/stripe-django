@@ -351,18 +351,20 @@ class TestDjangoStripeEventRepository:
         obj = StripeEvent.objects.get(stripe_id="evt_fail")
         assert obj.error == "connection timeout"
 
-    def test_list_recent(self, repo, db):
+    @pytest.mark.anyio
+    async def test_list_recent(self, repo, db):
         for i in range(3):
-            StripeEvent.objects.create(
+            await StripeEvent.objects.acreate(
                 stripe_id=f"evt_recent_{i}",
                 type="test",
                 livemode=False,
                 payload={},
             )
-        results = async_to_sync(repo.list_recent)(limit=2)
+        results = await repo.list_recent(limit=2)
         assert len(results) == 2
 
-    def test_list_recent_caps_at_100(self, repo, db):
-        results = async_to_sync(repo.list_recent)(limit=200)
+    @pytest.mark.anyio
+    async def test_list_recent_caps_at_100(self, repo, db):
+        results = await repo.list_recent(limit=200)
         # Should not error, just cap
         assert isinstance(results, list)
