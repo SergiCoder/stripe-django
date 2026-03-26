@@ -126,6 +126,7 @@ WSGI_APPLICATION = "config.wsgi.application"
 DATABASES = {"default": _parse_db_url(env.database_url)}
 
 AUTH_USER_MODEL = "users.User"
+LOGIN_URL = "/admin/login/"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
