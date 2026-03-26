@@ -80,7 +80,7 @@
     {% if subscription.discount_percent %}
     <div class="field">
       <label>Discount</label>
-      <span>{{ subscription.discount_percent }}% off{% if subscription.discount_end_at %} until {{ subscription.discount_end_at|date:"N j, Y" }}{% endif %}</span>
+      <span>{{ subscription.discount_percent|floatformat:0 }}% off{% if subscription.discount_end_at %} until {{ subscription.discount_end_at|date:"N j, Y" }}{% endif %}</span>
     </div>
     {% endif %}
   </div>

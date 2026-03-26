@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from django.contrib.auth.mixins import LoginRequiredMixin
-from django.http import HttpRequest, HttpResponse
+from django.conf import settings
+from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.urls import reverse
 from django.views.generic import TemplateView
 from hijack.views import AcquireUserView, ReleaseUserView
@@ -35,13 +35,15 @@ class HijackReleaseView(ReleaseUserView):
         return reverse("admin:users_user_changelist")
 
 
-class DashboardView(LoginRequiredMixin, TemplateView):
+class DashboardView(TemplateView):
     """GET /dashboard/ — render account, subscription, and org membership summary."""
 
     template_name = "dashboard/dashboard.html"
 
     async def get(self, request: HttpRequest, *args: object, **kwargs: object) -> HttpResponse:
-        user = request.user
+        user = await request.auser()
+        if not user.is_authenticated:
+            return HttpResponseRedirect(f"{settings.LOGIN_URL}?next={request.path}")
         subscription = await DjangoSubscriptionRepository().get_active_for_user(user.id)
         plan = (
             await DjangoPlanRepository().get_by_id(subscription.plan_id)
