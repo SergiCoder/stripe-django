@@ -43,6 +43,7 @@ class _Env(BaseSettings):
     allowed_hosts: list[str] = []
     cors_allowed_origins: list[str] = []
     cors_allow_all_origins: bool = False
+    csrf_trusted_origins: list[str] = []
     enable_session_auth: bool = False  # dev-only: allows browsable API via Django session
 
 
@@ -166,6 +167,7 @@ REST_FRAMEWORK = {
 
 CORS_ALLOWED_ORIGINS = env.cors_allowed_origins
 CORS_ALLOW_ALL_ORIGINS = env.cors_allow_all_origins
+CSRF_TRUSTED_ORIGINS = env.csrf_trusted_origins
 
 # Celery
 CELERY_BROKER_URL = env.redis_url
