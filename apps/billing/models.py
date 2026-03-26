@@ -77,7 +77,13 @@ class StripeCustomer(models.Model):
         blank=True,
         related_name="stripe_customer",
     )
-    # org FK and exactly-one-owner constraint added by the orgs app (PR 5)
+    org = models.OneToOneField(
+        "orgs.Org",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="stripe_customer",
+    )
     livemode = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -85,7 +91,10 @@ class StripeCustomer(models.Model):
         db_table = "stripe_customers"
         constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             models.CheckConstraint(
-                condition=models.Q(user_id__isnull=False),
+                condition=(
+                    models.Q(user_id__isnull=False, org_id__isnull=True)
+                    | models.Q(user_id__isnull=True, org_id__isnull=False)
+                ),
                 name="stripecustomer_has_owner",
             ),
         ]
