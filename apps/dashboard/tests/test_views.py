@@ -43,6 +43,20 @@ class TestDashboardViewContext:
         assert sub.status == "active"
         assert sub.stripe_id == "sub_dash_test"
 
+    def test_plan_context_none_when_no_subscription(self, logged_in_client):
+        resp = logged_in_client.get("/dashboard/")
+        assert resp.status_code == 200
+        assert resp.context["plan"] is None
+
+    def test_plan_context_populated_when_active_subscription(
+        self, logged_in_client, active_subscription, plan
+    ):
+        resp = logged_in_client.get("/dashboard/")
+        assert resp.status_code == 200
+        ctx_plan = resp.context["plan"]
+        assert ctx_plan is not None
+        assert ctx_plan.name == plan.name
+
     def test_org_memberships_empty_when_no_orgs(self, logged_in_client):
         resp = logged_in_client.get("/dashboard/")
         assert resp.status_code == 200
