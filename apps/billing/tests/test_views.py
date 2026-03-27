@@ -42,7 +42,7 @@ class TestPlanListView:
 
 
 @pytest.mark.django_db
-class TestCheckoutView:
+class TestCheckoutSessionView:
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
     @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
     def test_creates_session(self, mock_get_customer, mock_create, authed_client, plan_price):
@@ -61,7 +61,7 @@ class TestCheckoutView:
         mock_create.return_value = "https://checkout.stripe.com/session"
 
         resp = authed_client.post(
-            "/api/v1/billing/checkout/",
+            "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": "price_test_123",
                 "success_url": "https://example.com/success",
@@ -74,7 +74,7 @@ class TestCheckoutView:
 
     def test_invalid_plan_price_returns_404(self, authed_client):
         resp = authed_client.post(
-            "/api/v1/billing/checkout/",
+            "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": "price_nonexistent",
                 "success_url": "https://example.com/success",
@@ -85,7 +85,7 @@ class TestCheckoutView:
         assert resp.status_code == 404
 
     def test_missing_fields_returns_400(self, authed_client):
-        resp = authed_client.post("/api/v1/billing/checkout/", {}, format="json")
+        resp = authed_client.post("/api/v1/billing/checkout-sessions/", {}, format="json")
         assert resp.status_code == 400
 
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
@@ -114,7 +114,7 @@ class TestCheckoutView:
         mock_create.return_value = "https://checkout.stripe.com/session"
 
         authed_client.post(
-            "/api/v1/billing/checkout/",
+            "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": "price_team",
                 "trial_period_days": 14,
@@ -128,12 +128,12 @@ class TestCheckoutView:
 
     def test_unauthenticated_rejected(self):
         client = APIClient()
-        resp = client.post("/api/v1/billing/checkout/", {}, format="json")
+        resp = client.post("/api/v1/billing/checkout-sessions/", {}, format="json")
         assert resp.status_code in (401, 403)
 
 
 @pytest.mark.django_db
-class TestPortalView:
+class TestPortalSessionView:
     @patch("apps.billing.views.create_billing_portal_session", new_callable=AsyncMock)
     @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
     def test_creates_portal_session(self, mock_get_customer, mock_portal, authed_client):
@@ -152,7 +152,7 @@ class TestPortalView:
         mock_portal.return_value = "https://billing.stripe.com/portal"
 
         resp = authed_client.post(
-            "/api/v1/billing/portal/",
+            "/api/v1/billing/portal-sessions/",
             {"return_url": "https://example.com/dashboard"},
             format="json",
         )
@@ -163,7 +163,7 @@ class TestPortalView:
         settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
         settings.ALLOWED_HOSTS = ["example.com"]
         resp = authed_client.post(
-            "/api/v1/billing/portal/",
+            "/api/v1/billing/portal-sessions/",
             {"return_url": "https://evil.com/portal"},
             format="json",
         )
@@ -187,25 +187,25 @@ class TestSubscriptionView:
 
 
 @pytest.mark.django_db
-class TestCancelSubscriptionView:
+class TestCancelSubscription:
     @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
     def test_cancels_subscription(self, mock_cancel, authed_client, subscription):
-        resp = authed_client.post("/api/v1/billing/subscription/cancel/")
-        assert resp.status_code == 200
+        resp = authed_client.delete("/api/v1/billing/subscription/")
+        assert resp.status_code == 204
         mock_cancel.assert_called_once()
         assert mock_cancel.call_args.kwargs["at_period_end"] is True
 
     def test_no_customer_returns_404(self, authed_client, user):
-        resp = authed_client.post("/api/v1/billing/subscription/cancel/")
+        resp = authed_client.delete("/api/v1/billing/subscription/")
         assert resp.status_code == 404
 
 
 @pytest.mark.django_db
-class TestChangePlanView:
+class TestUpdateSubscription:
     @patch("apps.billing.views.change_plan", new_callable=AsyncMock)
     def test_changes_plan(self, mock_change, authed_client, subscription, plan_price):
-        resp = authed_client.post(
-            "/api/v1/billing/subscription/change-plan/",
+        resp = authed_client.patch(
+            "/api/v1/billing/subscription/",
             {"plan_price_id": "price_test_123"},
             format="json",
         )
@@ -213,16 +213,42 @@ class TestChangePlanView:
         mock_change.assert_called_once()
 
     def test_invalid_plan_returns_404(self, authed_client, subscription):
-        resp = authed_client.post(
-            "/api/v1/billing/subscription/change-plan/",
+        resp = authed_client.patch(
+            "/api/v1/billing/subscription/",
             {"plan_price_id": "price_nonexistent"},
             format="json",
         )
         assert resp.status_code == 404
 
-    def test_missing_fields_returns_400(self, authed_client, subscription):
-        resp = authed_client.post("/api/v1/billing/subscription/change-plan/", {}, format="json")
+    @patch("apps.billing.views.update_seat_count", new_callable=AsyncMock)
+    def test_updates_seats(self, mock_seats, authed_client, subscription):
+        resp = authed_client.patch(
+            "/api/v1/billing/subscription/",
+            {"quantity": 5},
+            format="json",
+        )
+        assert resp.status_code == 200
+        mock_seats.assert_called_once()
+
+    def test_invalid_quantity_returns_400(self, authed_client, subscription):
+        resp = authed_client.patch(
+            "/api/v1/billing/subscription/",
+            {"quantity": 0},
+            format="json",
+        )
         assert resp.status_code == 400
+
+    def test_empty_body_returns_400(self, authed_client, subscription):
+        resp = authed_client.patch("/api/v1/billing/subscription/", {}, format="json")
+        assert resp.status_code == 400
+
+    def test_no_subscription_returns_404(self, authed_client, user):
+        resp = authed_client.patch(
+            "/api/v1/billing/subscription/",
+            {"quantity": 5},
+            format="json",
+        )
+        assert resp.status_code == 404
 
 
 @pytest.mark.django_db
@@ -230,7 +256,7 @@ class TestApplyPromoCodeView:
     @patch("apps.billing.views.apply_promo_code", new_callable=AsyncMock)
     def test_applies_promo(self, mock_promo, authed_client, subscription):
         resp = authed_client.post(
-            "/api/v1/billing/subscription/promo/",
+            "/api/v1/billing/subscription/promo-code/",
             {"promo_code": "SAVE20"},
             format="json",
         )
@@ -239,41 +265,12 @@ class TestApplyPromoCodeView:
 
     def test_no_subscription_returns_404(self, authed_client, user):
         resp = authed_client.post(
-            "/api/v1/billing/subscription/promo/",
+            "/api/v1/billing/subscription/promo-code/",
             {"promo_code": "SAVE20"},
             format="json",
         )
         assert resp.status_code == 404
 
     def test_missing_promo_code_returns_400(self, authed_client, subscription):
-        resp = authed_client.post("/api/v1/billing/subscription/promo/", {}, format="json")
+        resp = authed_client.post("/api/v1/billing/subscription/promo-code/", {}, format="json")
         assert resp.status_code == 400
-
-
-@pytest.mark.django_db
-class TestUpdateSeatCountView:
-    @patch("apps.billing.views.update_seat_count", new_callable=AsyncMock)
-    def test_updates_seats(self, mock_seats, authed_client, subscription):
-        resp = authed_client.post(
-            "/api/v1/billing/subscription/seats/",
-            {"quantity": 5},
-            format="json",
-        )
-        assert resp.status_code == 200
-        mock_seats.assert_called_once()
-
-    def test_invalid_quantity_returns_400(self, authed_client, subscription):
-        resp = authed_client.post(
-            "/api/v1/billing/subscription/seats/",
-            {"quantity": 0},
-            format="json",
-        )
-        assert resp.status_code == 400
-
-    def test_no_subscription_returns_404(self, authed_client, user):
-        resp = authed_client.post(
-            "/api/v1/billing/subscription/seats/",
-            {"quantity": 5},
-            format="json",
-        )
-        assert resp.status_code == 404
