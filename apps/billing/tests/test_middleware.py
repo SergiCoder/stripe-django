@@ -138,3 +138,42 @@ class TestSecurityHeadersMiddleware:
         rf = RequestFactory()
         resp = middleware(rf.get("/"))
         assert "Content-Security-Policy" not in resp
+
+    def test_csp_default_for_regular_html_page(self, html_middleware):
+        rf = RequestFactory()
+        resp = html_middleware(rf.get("/admin/"))
+        csp = resp["Content-Security-Policy"]
+        assert "default-src 'self'" in csp
+        assert "script-src 'self'" in csp
+        assert "style-src 'self' 'unsafe-inline'" in csp
+        # Default CSP must NOT include CDN sources
+        assert "cdn.jsdelivr.net" not in csp
+
+    def test_csp_relaxed_for_swagger_docs(self, html_middleware):
+        rf = RequestFactory()
+        resp = html_middleware(rf.get("/api/docs/"))
+        csp = resp["Content-Security-Policy"]
+        assert "cdn.jsdelivr.net" in csp
+        assert "fonts.googleapis.com" in csp
+        assert "worker-src blob:" in csp
+
+    def test_csp_relaxed_for_redoc(self, html_middleware):
+        rf = RequestFactory()
+        resp = html_middleware(rf.get("/api/redoc/"))
+        csp = resp["Content-Security-Policy"]
+        assert "cdn.jsdelivr.net" in csp
+        assert "cdn.redoc.ly" in csp
+
+    def test_csp_swagger_includes_unsafe_inline_script(self, html_middleware):
+        rf = RequestFactory()
+        resp = html_middleware(rf.get("/api/docs/"))
+        csp = resp["Content-Security-Policy"]
+        assert "'unsafe-inline'" in csp
+
+    def test_csp_default_does_not_include_unsafe_inline_script(self, html_middleware):
+        rf = RequestFactory()
+        resp = html_middleware(rf.get("/dashboard/"))
+        csp = resp["Content-Security-Policy"]
+        # Default CSP has unsafe-inline in style-src but NOT in script-src
+        assert "script-src 'self'" in csp
+        assert "script-src 'self' 'unsafe-inline'" not in csp
