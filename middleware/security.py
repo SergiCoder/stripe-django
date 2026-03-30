@@ -22,7 +22,7 @@ class SecurityHeadersMiddleware:
         # X-XSS-Protection intentionally omitted — deprecated and can cause vulnerabilities
         if "text/html" in response.get("Content-Type", ""):
             path = request.path
-            if path.startswith(("/api/docs", "/api/redoc")):
+            if path.startswith(("/api/docs/", "/api/redoc/")):
                 # Swagger UI and ReDoc load assets from external CDNs
                 cdn = "https://cdn.jsdelivr.net"
                 fonts = "https://fonts.googleapis.com https://fonts.gstatic.com"
