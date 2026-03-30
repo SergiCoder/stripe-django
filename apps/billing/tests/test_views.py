@@ -126,6 +126,38 @@ class TestCheckoutSessionView:
         # trial_period_days should be None for team plans
         assert mock_create.call_args.kwargs["trial_period_days"] is None
 
+    @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    def test_trial_preserved_for_personal_plans(
+        self, mock_get_customer, mock_create, authed_client, plan_price
+    ):
+        from uuid import uuid4
+
+        from stripe_saas_core.domain.stripe_customer import StripeCustomer
+
+        mock_get_customer.return_value = StripeCustomer(
+            id=uuid4(),
+            stripe_id="cus_test",
+            user_id=uuid4(),
+            org_id=None,
+            livemode=False,
+            created_at=datetime.now(UTC),
+        )
+        mock_create.return_value = "https://checkout.stripe.com/session"
+
+        authed_client.post(
+            "/api/v1/billing/checkout-sessions/",
+            {
+                "plan_price_id": "price_test_123",
+                "trial_period_days": 7,
+                "success_url": "https://example.com/success",
+                "cancel_url": "https://example.com/cancel",
+            },
+            format="json",
+        )
+        # trial_period_days should be preserved for personal plans
+        assert mock_create.call_args.kwargs["trial_period_days"] == 7
+
     def test_unauthenticated_rejected(self):
         client = APIClient()
         resp = client.post("/api/v1/billing/checkout-sessions/", {}, format="json")
@@ -169,6 +201,15 @@ class TestPortalSessionView:
         )
         assert resp.status_code == 400
 
+    def test_missing_body_returns_400(self, authed_client):
+        resp = authed_client.post("/api/v1/billing/portal-sessions/", {}, format="json")
+        assert resp.status_code == 400
+
+    def test_unauthenticated_rejected(self):
+        client = APIClient()
+        resp = client.post("/api/v1/billing/portal-sessions/", {}, format="json")
+        assert resp.status_code in (401, 403)
+
 
 @pytest.mark.django_db
 class TestSubscriptionView:
@@ -185,6 +226,11 @@ class TestSubscriptionView:
         resp = authed_client.get("/api/v1/billing/subscription/")
         assert resp.status_code == 404
 
+    def test_unauthenticated_rejected(self):
+        client = APIClient()
+        resp = client.get("/api/v1/billing/subscription/")
+        assert resp.status_code in (401, 403)
+
 
 @pytest.mark.django_db
 class TestCancelSubscription:
@@ -198,6 +244,11 @@ class TestCancelSubscription:
     def test_no_customer_returns_404(self, authed_client, user):
         resp = authed_client.delete("/api/v1/billing/subscription/")
         assert resp.status_code == 404
+
+    def test_unauthenticated_rejected(self):
+        client = APIClient()
+        resp = client.delete("/api/v1/billing/subscription/")
+        assert resp.status_code in (401, 403)
 
 
 @pytest.mark.django_db
@@ -250,6 +301,39 @@ class TestUpdateSubscription:
         )
         assert resp.status_code == 404
 
+    @patch("apps.billing.views.update_seat_count", new_callable=AsyncMock)
+    @patch("apps.billing.views.change_plan", new_callable=AsyncMock)
+    def test_combined_plan_and_seats_update(
+        self, mock_change, mock_seats, authed_client, subscription, plan_price
+    ):
+        resp = authed_client.patch(
+            "/api/v1/billing/subscription/",
+            {"plan_price_id": "price_test_123", "quantity": 3},
+            format="json",
+        )
+        assert resp.status_code == 200
+        mock_change.assert_called_once()
+        mock_seats.assert_called_once()
+        assert mock_seats.call_args.kwargs["quantity"] == 3
+
+    @patch("apps.billing.views.change_plan", new_callable=AsyncMock)
+    def test_prorate_kwarg_passed_to_change_plan(
+        self, mock_change, authed_client, subscription, plan_price
+    ):
+        authed_client.patch(
+            "/api/v1/billing/subscription/",
+            {"plan_price_id": "price_test_123", "prorate": False},
+            format="json",
+        )
+        assert mock_change.call_args.kwargs["prorate"] is False
+
+    def test_unauthenticated_rejected(self):
+        client = APIClient()
+        resp = client.patch(
+            "/api/v1/billing/subscription/", {"quantity": 5}, format="json"
+        )
+        assert resp.status_code in (401, 403)
+
 
 @pytest.mark.django_db
 class TestApplyPromoCodeView:
@@ -274,3 +358,12 @@ class TestApplyPromoCodeView:
     def test_missing_promo_code_returns_400(self, authed_client, subscription):
         resp = authed_client.post("/api/v1/billing/subscription/promo-code/", {}, format="json")
         assert resp.status_code == 400
+
+    def test_unauthenticated_rejected(self):
+        client = APIClient()
+        resp = client.post(
+            "/api/v1/billing/subscription/promo-code/",
+            {"promo_code": "SAVE20"},
+            format="json",
+        )
+        assert resp.status_code in (401, 403)

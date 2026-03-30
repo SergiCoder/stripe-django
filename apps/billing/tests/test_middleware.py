@@ -177,3 +177,35 @@ class TestSecurityHeadersMiddleware:
         # Default CSP has unsafe-inline in style-src but NOT in script-src
         assert "script-src 'self'" in csp
         assert "script-src 'self' 'unsafe-inline'" not in csp
+
+    def test_csp_relaxed_for_swagger_subpath(self, html_middleware):
+        rf = RequestFactory()
+        resp = html_middleware(rf.get("/api/docs/extra/"))
+        csp = resp["Content-Security-Policy"]
+        assert "cdn.jsdelivr.net" in csp
+
+    def test_csp_relaxed_for_redoc_subpath(self, html_middleware):
+        rf = RequestFactory()
+        resp = html_middleware(rf.get("/api/redoc/extra/"))
+        csp = resp["Content-Security-Policy"]
+        assert "cdn.jsdelivr.net" in csp
+
+    def test_csp_not_relaxed_for_api_schema(self, html_middleware):
+        rf = RequestFactory()
+        resp = html_middleware(rf.get("/api/schema/"))
+        csp = resp["Content-Security-Policy"]
+        # /api/schema/ is not docs or redoc — should get default CSP
+        assert "cdn.jsdelivr.net" not in csp
+
+    def test_csp_relaxed_includes_connect_src(self, html_middleware):
+        rf = RequestFactory()
+        resp = html_middleware(rf.get("/api/docs/"))
+        csp = resp["Content-Security-Policy"]
+        assert "connect-src 'self'" in csp
+
+    def test_csp_relaxed_includes_font_src(self, html_middleware):
+        rf = RequestFactory()
+        resp = html_middleware(rf.get("/api/docs/"))
+        csp = resp["Content-Security-Policy"]
+        assert "font-src 'self'" in csp
+        assert "fonts.gstatic.com" in csp
