@@ -194,7 +194,7 @@ class SubscriptionView(APIView):
         except ObjectDoesNotExist:
             return Response(status=status.HTTP_404_NOT_FOUND)
 
-    @extend_schema(request=UpdateSubscriptionSerializer, responses={200: None}, tags=["billing"])
+    @extend_schema(request=UpdateSubscriptionSerializer, responses={204: None}, tags=["billing"])
     def patch(self, request: Request) -> Response:
         user = get_user(request)
         ser = UpdateSubscriptionSerializer(data=request.data)
@@ -219,7 +219,7 @@ class SubscriptionView(APIView):
                 )
 
         async_to_sync(_do)()
-        return Response(status=status.HTTP_200_OK)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @extend_schema(request=None, responses={204: None}, tags=["billing"])
     def delete(self, request: Request) -> Response:
