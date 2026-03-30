@@ -116,6 +116,7 @@ stripe-django/
 ├── middleware/           # Django middleware (exception handling, security headers)
 ├── infra/               # Docker, Caddy TLS proxy, and dev entrypoint
 ├── templates/           # Shared HTML templates (admin overrides, DRF browsable API, topbar)
+├── scripts/             # CI helper scripts (dependency parser)
 ├── .github/             # CI workflows and PR template
 ├── helpers.py           # Shared Django helpers (aget_or_none, get_user)
 └── manage.py

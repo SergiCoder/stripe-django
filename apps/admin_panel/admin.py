@@ -17,7 +17,7 @@ admin.site.unregister(User)
 
 
 @admin.register(User)
-class UserAdminExtended(UserAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic but BaseUserAdmin doesn't declare its type parameter
+class UserAdminExtended(UserAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic but UserAdmin inherits from BaseUserAdmin which doesn't declare its type parameter
     list_display = (
         "email",
         "full_name",
