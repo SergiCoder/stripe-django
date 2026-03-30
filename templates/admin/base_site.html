@@ -43,9 +43,12 @@
   {% if site_url %}
     <a href="{{ site_url }}">{% translate 'View site' %}</a> /
   {% endif %}
-  {# swagger-ui and redoc URL names are only registered when DEBUG=True (see config/urls.py) #}
+  {# swagger-ui and redoc URL names are only registered when DEBUG=True (see config/urls.py). #}
+  {# Without a guard here this will raise NoReverseMatch in production — render only when DEBUG. #}
+  {% if debug %}
   <a href="{% url 'swagger-ui' %}">Swagger</a> /
   <a href="{% url 'redoc' %}">ReDoc</a> /
+  {% endif %}
   {% if user.has_usable_password %}
     <a href="{% url 'admin:password_change' %}">{% translate 'Change password' %}</a> /
   {% endif %}
