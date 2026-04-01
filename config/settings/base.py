@@ -159,7 +159,7 @@ REST_FRAMEWORK = {
         "user": "1000/hour",
         "auth": "10/minute",
         "billing": "30/hour",
-        "account": "10/hour",
+        "account": "120/hour",
         "account_export": "3/hour",
         "orgs": "60/hour",
         "references": "120/hour",
