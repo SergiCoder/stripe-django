@@ -13,6 +13,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from saasmint_core.services.currency import SUPPORTED_CURRENCIES
 from saasmint_core.services.locale import SUPPORTED_LOCALES
+from saasmint_core.services.phone import SUPPORTED_PHONE_PREFIXES
 
 
 class LocaleListView(APIView):
@@ -37,6 +38,24 @@ class CurrencyListView(APIView):
     @extend_schema(responses={200: list[str]}, tags=["references"])
     def get(self, request: Request) -> Response:
         return Response(sorted(SUPPORTED_CURRENCIES))
+
+
+_PHONE_PREFIXES: list[dict[str, str]] = [
+    {"prefix": k, "label": v}
+    for k, v in sorted(SUPPORTED_PHONE_PREFIXES.items(), key=lambda x: int(x[0].lstrip("+")))
+]
+
+
+class PhonePrefixListView(APIView):
+    """GET /api/v1/phone-prefixes/ — list supported phone prefixes."""
+
+    permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
+    throttle_scope = "references"
+
+    @extend_schema(responses={200: list[dict[str, str]]}, tags=["references"])
+    def get(self, request: Request) -> Response:
+        return Response(_PHONE_PREFIXES)
 
 
 _TIMEZONES: list[str] = sorted(available_timezones())
