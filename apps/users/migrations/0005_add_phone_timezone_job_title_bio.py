@@ -4,30 +4,34 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('users', '0004_add_updated_at'),
+        ("users", "0004_add_updated_at"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='user',
-            name='bio',
+            model_name="user",
+            name="bio",
             field=models.TextField(blank=True, null=True),
         ),
         migrations.AddField(
-            model_name='user',
-            name='job_title',
+            model_name="user",
+            name="job_title",
             field=models.CharField(blank=True, max_length=100, null=True),
         ),
         migrations.AddField(
-            model_name='user',
-            name='phone',
-            field=models.CharField(blank=True, max_length=20, null=True),
+            model_name="user",
+            name="phone_prefix",
+            field=models.CharField(blank=True, max_length=5, null=True),
         ),
         migrations.AddField(
-            model_name='user',
-            name='timezone',
+            model_name="user",
+            name="phone",
+            field=models.CharField(blank=True, max_length=15, null=True),
+        ),
+        migrations.AddField(
+            model_name="user",
+            name="timezone",
             field=models.CharField(blank=True, max_length=50, null=True),
         ),
     ]
