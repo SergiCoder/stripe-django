@@ -47,6 +47,10 @@ class UserAdmin(BaseUserAdmin):  # type: ignore[type-arg]  # django-stubs ModelA
                     "account_type",
                     "preferred_locale",
                     "preferred_currency",
+                    "phone",
+                    "timezone",
+                    "job_title",
+                    "bio",
                     "is_verified",
                 )
             },

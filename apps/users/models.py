@@ -32,6 +32,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     )
     preferred_locale = models.CharField(max_length=10, default="en")
     preferred_currency = models.CharField(max_length=3, default="usd")
+    phone = models.CharField(max_length=20, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means phone not set
+    timezone = models.CharField(max_length=50, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means timezone not set
+    job_title = models.CharField(max_length=100, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means job title not set
+    bio = models.TextField(blank=True, null=True)  # noqa: DJ001  # nullable TextField intentional: NULL means bio not set
     is_verified = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)

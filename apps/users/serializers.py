@@ -18,6 +18,10 @@ class UserSerializer(serializers.ModelSerializer[User]):
             "account_type",
             "preferred_locale",
             "preferred_currency",
+            "phone",
+            "timezone",
+            "job_title",
+            "bio",
             "is_verified",
             "created_at",
         )
@@ -29,6 +33,10 @@ class UpdateUserSerializer(serializers.Serializer[User]):
     avatar_url = serializers.URLField(required=False, allow_null=True)
     preferred_locale = serializers.CharField(max_length=10, required=False)
     preferred_currency = serializers.CharField(max_length=3, required=False)
+    phone = serializers.CharField(max_length=20, required=False, allow_null=True)
+    timezone = serializers.CharField(max_length=50, required=False, allow_null=True)
+    job_title = serializers.CharField(max_length=100, required=False, allow_null=True)
+    bio = serializers.CharField(required=False, allow_null=True)
 
     def validate_preferred_locale(self, value: str) -> str:
         from saasmint_core.services.locale import SUPPORTED_LOCALES
