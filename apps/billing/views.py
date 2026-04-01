@@ -206,19 +206,12 @@ class SubscriptionView(APIView):
 
         async def _do() -> None:
             _, sub = await _get_customer_and_subscription(user.id)
-            if "plan_price_id" in data and "quantity" in data:
-                # Combined update — single Stripe API call
+            if "plan_price_id" in data:
                 await change_plan(
                     stripe_subscription_id=sub.stripe_id,
                     new_stripe_price_id=data["plan_price_id"],
                     prorate=data["prorate"],
-                    quantity=data["quantity"],
-                )
-            elif "plan_price_id" in data:
-                await change_plan(
-                    stripe_subscription_id=sub.stripe_id,
-                    new_stripe_price_id=data["plan_price_id"],
-                    prorate=data["prorate"],
+                    quantity=data.get("quantity"),
                 )
             elif "quantity" in data:
                 await update_seat_count(
