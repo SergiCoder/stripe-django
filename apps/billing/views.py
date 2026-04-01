@@ -134,7 +134,7 @@ class CheckoutSessionView(APIView):
             )
 
         url = async_to_sync(_do)()
-        return Response({"url": url}, status=status.HTTP_201_CREATED)
+        return Response({"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url})
 
 
 class PortalSessionView(APIView):
@@ -168,7 +168,7 @@ class PortalSessionView(APIView):
             )
 
         url = async_to_sync(_do)()
-        return Response({"url": url}, status=status.HTTP_201_CREATED)
+        return Response({"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url})
 
 
 class SubscriptionView(APIView):
@@ -206,13 +206,21 @@ class SubscriptionView(APIView):
 
         async def _do() -> None:
             _, sub = await _get_customer_and_subscription(user.id)
-            if "plan_price_id" in data:
+            if "plan_price_id" in data and "quantity" in data:
+                # Combined update — single Stripe API call
+                await change_plan(
+                    stripe_subscription_id=sub.stripe_id,
+                    new_stripe_price_id=data["plan_price_id"],
+                    prorate=data["prorate"],
+                    quantity=data["quantity"],
+                )
+            elif "plan_price_id" in data:
                 await change_plan(
                     stripe_subscription_id=sub.stripe_id,
                     new_stripe_price_id=data["plan_price_id"],
                     prorate=data["prorate"],
                 )
-            if "quantity" in data:
+            elif "quantity" in data:
                 await update_seat_count(
                     stripe_subscription_id=sub.stripe_id,
                     quantity=data["quantity"],
