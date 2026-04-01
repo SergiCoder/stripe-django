@@ -69,8 +69,8 @@ class TestCheckoutSessionView:
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": "price_test_123",
-                "success_url": "https://example.com/success",
-                "cancel_url": "https://example.com/cancel",
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
             },
             format="json",
         )
@@ -82,8 +82,8 @@ class TestCheckoutSessionView:
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": "price_nonexistent",
-                "success_url": "https://example.com/success",
-                "cancel_url": "https://example.com/cancel",
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
             },
             format="json",
         )
@@ -112,8 +112,8 @@ class TestCheckoutSessionView:
             {
                 "plan_price_id": "price_team",
                 "trial_period_days": 14,
-                "success_url": "https://example.com/success",
-                "cancel_url": "https://example.com/cancel",
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
             },
             format="json",
         )
@@ -133,8 +133,8 @@ class TestCheckoutSessionView:
             {
                 "plan_price_id": "price_test_123",
                 "trial_period_days": 7,
-                "success_url": "https://example.com/success",
-                "cancel_url": "https://example.com/cancel",
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
             },
             format="json",
         )
@@ -159,7 +159,7 @@ class TestPortalSessionView:
 
         resp = authed_client.post(
             "/api/v1/billing/portal-sessions/",
-            {"return_url": "https://example.com/dashboard"},
+            {"return_url": "https://localhost/dashboard"},
             format="json",
         )
         assert resp.status_code == 201
@@ -312,10 +312,9 @@ class TestUpdateSubscription:
         )
         assert resp.status_code == 404
 
-    @patch("apps.billing.views.update_seat_count", new_callable=AsyncMock)
     @patch("apps.billing.views.change_plan", new_callable=AsyncMock)
     def test_combined_plan_and_seats_update(
-        self, mock_change, mock_seats, authed_client, subscription, plan_price
+        self, mock_change, authed_client, subscription, plan_price
     ):
         resp = authed_client.patch(
             "/api/v1/billing/subscription/",
@@ -324,8 +323,7 @@ class TestUpdateSubscription:
         )
         assert resp.status_code == 204
         mock_change.assert_called_once()
-        mock_seats.assert_called_once()
-        assert mock_seats.call_args.kwargs["quantity"] == 3
+        assert mock_change.call_args.kwargs["quantity"] == 3
 
     @patch("apps.billing.views.change_plan", new_callable=AsyncMock)
     def test_prorate_kwarg_passed_to_change_plan(
