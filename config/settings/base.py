@@ -162,6 +162,7 @@ REST_FRAMEWORK = {
         "account": "10/hour",
         "account_export": "3/hour",
         "orgs": "60/hour",
+        "references": "120/hour",
     },
     "EXCEPTION_HANDLER": "middleware.exceptions.domain_exception_handler",
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
