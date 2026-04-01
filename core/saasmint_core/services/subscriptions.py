@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Literal
 
 import stripe
 
-from stripe_saas_core.services.coupons import validate_promo_code
+from saasmint_core.services.coupons import validate_promo_code
 
 
 async def _get_first_item_id(stripe_subscription_id: str) -> str:
@@ -20,9 +21,13 @@ async def change_plan(
     stripe_subscription_id: str,
     new_stripe_price_id: str,
     prorate: bool = True,
+    quantity: int | None = None,
 ) -> None:
     """
-    Upgrade or downgrade to a new plan price.
+    Upgrade or downgrade to a new plan price, optionally updating quantity.
+
+    When *quantity* is provided the plan switch and seat-count update are
+    applied in a single Stripe API call, avoiding partial-update states.
 
     Proration is enabled by default: the customer is credited for unused time
     on the old plan and charged for the new plan immediately. Set prorate=False
@@ -31,13 +36,22 @@ async def change_plan(
     DB state is synced via customer.subscription.updated webhook.
     """
     item_id = await _get_first_item_id(stripe_subscription_id)
+    proration: Literal["create_prorations", "none"] = "create_prorations" if prorate else "none"
 
-    await asyncio.to_thread(
-        stripe.Subscription.modify,
-        stripe_subscription_id,
-        items=[{"id": item_id, "price": new_stripe_price_id}],
-        proration_behavior="create_prorations" if prorate else "none",
-    )
+    if quantity is not None:
+        await asyncio.to_thread(
+            stripe.Subscription.modify,
+            stripe_subscription_id,
+            items=[{"id": item_id, "price": new_stripe_price_id, "quantity": quantity}],
+            proration_behavior=proration,
+        )
+    else:
+        await asyncio.to_thread(
+            stripe.Subscription.modify,
+            stripe_subscription_id,
+            items=[{"id": item_id, "price": new_stripe_price_id}],
+            proration_behavior=proration,
+        )
 
 
 async def update_seat_count(

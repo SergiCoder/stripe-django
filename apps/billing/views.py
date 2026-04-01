@@ -16,15 +16,15 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
-from stripe_saas_core.domain.stripe_customer import StripeCustomer
-from stripe_saas_core.domain.subscription import Subscription
-from stripe_saas_core.services.billing import (
+from saasmint_core.domain.stripe_customer import StripeCustomer
+from saasmint_core.domain.subscription import Subscription
+from saasmint_core.services.billing import (
     cancel_subscription,
     create_billing_portal_session,
     create_checkout_session,
     get_or_create_customer,
 )
-from stripe_saas_core.services.subscriptions import (
+from saasmint_core.services.subscriptions import (
     apply_promo_code,
     change_plan,
     update_seat_count,
@@ -134,7 +134,7 @@ class CheckoutSessionView(APIView):
             )
 
         url = async_to_sync(_do)()
-        return Response({"url": url}, status=status.HTTP_201_CREATED)
+        return Response({"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url})
 
 
 class PortalSessionView(APIView):
@@ -168,7 +168,7 @@ class PortalSessionView(APIView):
             )
 
         url = async_to_sync(_do)()
-        return Response({"url": url}, status=status.HTTP_201_CREATED)
+        return Response({"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url})
 
 
 class SubscriptionView(APIView):
@@ -211,8 +211,9 @@ class SubscriptionView(APIView):
                     stripe_subscription_id=sub.stripe_id,
                     new_stripe_price_id=data["plan_price_id"],
                     prorate=data["prorate"],
+                    quantity=data.get("quantity"),
                 )
-            if "quantity" in data:
+            elif "quantity" in data:
                 await update_seat_count(
                     stripe_subscription_id=sub.stripe_id,
                     quantity=data["quantity"],
