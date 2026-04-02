@@ -53,9 +53,10 @@ class TestUpdateUserSerializer:
         ser = UpdateUserSerializer(data={})
         assert ser.is_valid(), ser.errors
 
-    def test_null_full_name_is_valid(self):
+    def test_null_full_name_is_rejected(self):
         ser = UpdateUserSerializer(data={"full_name": None})
-        assert ser.is_valid(), ser.errors
+        assert not ser.is_valid()
+        assert "full_name" in ser.errors
 
     def test_null_avatar_url_is_valid(self):
         ser = UpdateUserSerializer(data={"avatar_url": None})
