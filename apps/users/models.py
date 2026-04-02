@@ -37,6 +37,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     phone = models.CharField(max_length=15, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means phone not set
     timezone = models.CharField(max_length=50, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means timezone not set
     job_title = models.CharField(max_length=100, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means job title not set
+    pronouns = models.CharField(max_length=50, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means "don't specify"
     bio = models.TextField(blank=True, null=True)  # noqa: DJ001  # nullable TextField intentional: NULL means bio not set
     is_verified = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)

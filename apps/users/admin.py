@@ -43,6 +43,7 @@ class UserChangeForm(forms.ModelForm):  # type: ignore[type-arg]
             "phone",
             "timezone",
             "job_title",
+            "pronouns",
             "bio",
             "is_verified",
             "is_active",
@@ -109,6 +110,7 @@ class UserAdmin(BaseUserAdmin):  # type: ignore[type-arg]  # django-stubs ModelA
                     ("phone_prefix", "phone"),
                     "timezone",
                     "job_title",
+                    "pronouns",
                     "bio",
                     "is_verified",
                 )

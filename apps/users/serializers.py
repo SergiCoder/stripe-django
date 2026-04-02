@@ -30,6 +30,7 @@ class UserSerializer(serializers.ModelSerializer[User]):
             "phone",
             "timezone",
             "job_title",
+            "pronouns",
             "bio",
             "is_verified",
             "created_at",
@@ -67,6 +68,7 @@ class UpdateUserSerializer(serializers.Serializer[User]):
     phone = _PhoneWriteSerializer(required=False, allow_null=True)
     timezone = serializers.CharField(max_length=50, required=False, allow_null=True)
     job_title = serializers.CharField(max_length=100, required=False, allow_null=True)
+    pronouns = serializers.CharField(max_length=50, required=False, allow_null=True)
     bio = serializers.CharField(required=False, allow_null=True)
 
     def validate_preferred_locale(self, value: str) -> str:

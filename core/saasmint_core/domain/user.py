@@ -21,6 +21,7 @@ class User(BaseModel):
     account_type: AccountType = AccountType.PERSONAL
     preferred_locale: str = "en"
     preferred_currency: str = "usd"
+    pronouns: str | None = None
     is_verified: bool = False
     created_at: datetime
     updated_at: datetime | None = None
