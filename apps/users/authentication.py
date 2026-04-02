@@ -67,15 +67,23 @@ class SupabaseJWTAuthentication(BaseAuthentication):
                     audience="authenticated",
                 )
             else:
-                raise AuthenticationFailed("Unsupported token algorithm.")
+                raise AuthenticationFailed(
+                    {"detail": "Unsupported token algorithm.", "code": "unsupported_algorithm"}
+                )
         except jwt.ExpiredSignatureError as exc:
-            raise AuthenticationFailed("Token has expired.") from exc
+            raise AuthenticationFailed(
+                {"detail": "Token has expired.", "code": "token_expired"}
+            ) from exc
         except jwt.InvalidTokenError as exc:
             logger.warning("JWT verification failed for alg=%s", alg)
-            raise AuthenticationFailed("Invalid token.") from exc
+            raise AuthenticationFailed(
+                {"detail": "Invalid token.", "code": "invalid_token"}
+            ) from exc
         except (jwt.PyJWKClientError, ConnectionError) as exc:
             logger.error("JWKS fetch error: %s", exc)
-            raise AuthenticationFailed("Invalid token.") from exc
+            raise AuthenticationFailed(
+                {"detail": "Invalid token.", "code": "invalid_token"}
+            ) from exc
 
         # Defense-in-depth: reject unverified emails even if Supabase is
         # configured to allow sign-in before verification.
@@ -89,11 +97,15 @@ class SupabaseJWTAuthentication(BaseAuthentication):
                 payload.get("sub", ""),
                 payload.get("email", ""),
             )
-            raise AuthenticationFailed("Email not verified.")
+            raise AuthenticationFailed(
+                {"detail": "Email not verified.", "code": "email_not_verified"}
+            )
 
         supabase_uid = str(payload.get("sub", ""))
         if not supabase_uid:
-            raise AuthenticationFailed("Token missing 'sub' claim.")
+            raise AuthenticationFailed(
+                {"detail": "Token missing 'sub' claim.", "code": "invalid_token"}
+            )
 
         cache_key = AUTH_USER_CACHE_KEY.format(supabase_uid)
         user: User | None = cache.get(cache_key)
@@ -105,20 +117,42 @@ class SupabaseJWTAuthentication(BaseAuthentication):
             except User.DoesNotExist:
                 email = str(payload.get("email", ""))
                 if not email:
-                    raise AuthenticationFailed("Token missing 'email' claim.") from None
-                # Prevent resurrecting soft-deleted or deactivated users
-                if User.objects.filter(supabase_uid=supabase_uid).exists():
-                    raise AuthenticationFailed("Account is deactivated.") from None
-                try:
-                    user, _ = User.objects.get_or_create(
-                        supabase_uid=supabase_uid,
-                        deleted_at__isnull=True,
-                        defaults={"email": email, "is_verified": True},
-                    )
-                except IntegrityError:
                     raise AuthenticationFailed(
-                        "Email already associated with another account."
+                        {"detail": "Token missing 'email' claim.", "code": "invalid_token"}
                     ) from None
+                # Check for existing soft-deleted or deactivated accounts
+                existing = User.objects.filter(supabase_uid=supabase_uid).first()
+                if existing is not None:
+                    if not existing.is_active:
+                        logger.warning(
+                            "Rejected deactivated account: sub=%s email=%s",
+                            supabase_uid,
+                            email,
+                        )
+                        raise AuthenticationFailed(
+                            {"detail": "Account is deactivated.", "code": "account_deactivated"}
+                        ) from None
+                    # Self-deleted user re-registering with a verified email — reactivate
+                    existing.deleted_at = None
+                    existing.email = email
+                    existing.is_verified = True
+                    existing.save(update_fields=["deleted_at", "email", "is_verified"])
+                    logger.info("Reactivated self-deleted account: sub=%s", supabase_uid)
+                    user = existing
+                else:
+                    try:
+                        user, _ = User.objects.get_or_create(
+                            supabase_uid=supabase_uid,
+                            deleted_at__isnull=True,
+                            defaults={"email": email, "is_verified": True},
+                        )
+                    except IntegrityError:
+                        raise AuthenticationFailed(
+                            {
+                                "detail": "Email already associated with another account.",
+                                "code": "email_conflict",
+                            }
+                        ) from None
             cache.set(cache_key, user, timeout=_AUTH_CACHE_TTL)
 
         return (user, token)

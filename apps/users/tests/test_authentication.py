@@ -131,8 +131,8 @@ class TestSupabaseJWTAuthentication:
             self.auth.authenticate(request)
 
     @pytest.mark.django_db
-    def test_deactivated_user_raises(self):
-        """A soft-deleted user cannot re-authenticate."""
+    def test_admin_deactivated_user_raises(self):
+        """An admin-deactivated user (is_active=False) cannot re-authenticate."""
         User.objects.create_user(
             email="deactivated@example.com",
             supabase_uid="sup_deactivated",
@@ -144,8 +144,8 @@ class TestSupabaseJWTAuthentication:
             self.auth.authenticate(request)
 
     @pytest.mark.django_db
-    def test_soft_deleted_user_raises(self):
-        """A user with deleted_at set cannot re-authenticate."""
+    def test_self_deleted_user_reactivated(self):
+        """A self-deleted user (deleted_at set, is_active=True) is reactivated on login."""
         user = User.objects.create_user(
             email="deleted@example.com",
             supabase_uid="sup_deleted",
@@ -154,8 +154,11 @@ class TestSupabaseJWTAuthentication:
         user.save()
         token = _make_token(sub="sup_deleted", email="deleted@example.com")
         request = _make_request(token)
-        with pytest.raises(AuthenticationFailed, match="deactivated"):
-            self.auth.authenticate(request)
+
+        result_user, _ = self.auth.authenticate(request)
+        assert result_user.pk == user.pk
+        assert result_user.deleted_at is None
+        assert result_user.is_verified is True
 
     @pytest.mark.django_db
     def test_integrity_error_on_duplicate_email(self):
