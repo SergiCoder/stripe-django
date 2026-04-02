@@ -60,7 +60,7 @@ class _PhoneWriteSerializer(serializers.Serializer[User]):
 
 
 class UpdateUserSerializer(serializers.Serializer[User]):
-    full_name = serializers.CharField(max_length=255, required=False, allow_null=True)
+    full_name = serializers.CharField(min_length=3, max_length=255, required=False)
     avatar_url = serializers.URLField(required=False, allow_null=True)
     preferred_locale = serializers.CharField(max_length=10, required=False)
     preferred_currency = serializers.CharField(max_length=3, required=False)

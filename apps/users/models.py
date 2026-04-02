@@ -7,6 +7,7 @@ from typing import Any, ClassVar
 
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
 from django.core.cache import cache
+from django.core.validators import MinLengthValidator
 from django.db import models
 
 from apps.users.managers import UserManager
@@ -23,7 +24,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     supabase_uid = models.CharField(max_length=255, unique=True)
     email = models.EmailField(unique=True)
-    full_name = models.CharField(max_length=255, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means name not set (distinguishable from empty string)
+    full_name = models.CharField(max_length=255, validators=[MinLengthValidator(3)])
     avatar_url = models.TextField(blank=True, null=True)  # noqa: DJ001  # nullable TextField intentional: NULL means no avatar set (distinguishable from empty string)
     account_type = models.CharField(
         max_length=20,

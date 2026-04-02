@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class AccountType(StrEnum):
@@ -16,7 +16,7 @@ class User(BaseModel):
     id: UUID
     supabase_uid: str
     email: EmailStr
-    full_name: str | None = None
+    full_name: str = Field(min_length=3, max_length=255)
     avatar_url: str | None = None
     account_type: AccountType = AccountType.PERSONAL
     preferred_locale: str = "en"
