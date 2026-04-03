@@ -142,15 +142,19 @@ class SupabaseJWTAuthentication(BaseAuthentication):
                         {"detail": "Account has been deleted.", "code": "account_deleted"}
                     ) from None
                 full_name = str(user_metadata.get("full_name", "")).strip()
+                pronouns = user_metadata.get("pronouns") or None
+                defaults: dict[str, object] = {
+                    "email": email,
+                    "full_name": full_name,
+                    "is_verified": True,
+                }
+                if pronouns is not None:
+                    defaults["pronouns"] = str(pronouns).strip()
                 try:
                     user, _ = User.objects.get_or_create(
                         supabase_uid=supabase_uid,
                         deleted_at__isnull=True,
-                        defaults={
-                            "email": email,
-                            "full_name": full_name,
-                            "is_verified": True,
-                        },
+                        defaults=defaults,
                     )
                 except IntegrityError:
                     raise AuthenticationFailed(
