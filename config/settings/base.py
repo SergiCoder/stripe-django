@@ -197,6 +197,12 @@ CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "UTC"
+CELERY_BEAT_SCHEDULE = {
+    "process-scheduled-deletions": {
+        "task": "apps.users.tasks.process_scheduled_deletions",
+        "schedule": 3600,  # every hour
+    },
+}
 
 # Stripe
 STRIPE_SECRET_KEY = env.stripe_secret_key

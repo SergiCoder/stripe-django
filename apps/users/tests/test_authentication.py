@@ -144,8 +144,8 @@ class TestSupabaseJWTAuthentication:
             self.auth.authenticate(request)
 
     @pytest.mark.django_db
-    def test_self_deleted_user_reactivated(self):
-        """A self-deleted user (deleted_at set, is_active=True) is reactivated on login."""
+    def test_self_deleted_user_rejected(self):
+        """A soft-deleted user (deleted_at set, is_active=True) is always rejected."""
         user = User.objects.create_user(
             email="deleted@example.com",
             supabase_uid="sup_deleted",
@@ -155,10 +155,40 @@ class TestSupabaseJWTAuthentication:
         token = _make_token(sub="sup_deleted", email="deleted@example.com")
         request = _make_request(token)
 
+        with pytest.raises(AuthenticationFailed) as exc_info:
+            self.auth.authenticate(request)
+        assert exc_info.value.detail["code"] == "account_deleted"
+
+    @pytest.mark.django_db
+    def test_scheduled_deletion_past_due_rejected(self):
+        """A user whose scheduled_deletion_at has passed is rejected."""
+        user = User.objects.create_user(
+            email="scheduled@example.com",
+            supabase_uid="sup_scheduled",
+        )
+        user.scheduled_deletion_at = datetime.now(UTC) - timedelta(hours=1)
+        user.save()
+        token = _make_token(sub="sup_scheduled", email="scheduled@example.com")
+        request = _make_request(token)
+
+        with pytest.raises(AuthenticationFailed) as exc_info:
+            self.auth.authenticate(request)
+        assert exc_info.value.detail["code"] == "account_deleted"
+
+    @pytest.mark.django_db
+    def test_scheduled_deletion_future_allowed(self):
+        """A user whose scheduled_deletion_at is in the future can still authenticate."""
+        user = User.objects.create_user(
+            email="future@example.com",
+            supabase_uid="sup_future",
+        )
+        user.scheduled_deletion_at = datetime.now(UTC) + timedelta(days=10)
+        user.save()
+        token = _make_token(sub="sup_future", email="future@example.com")
+        request = _make_request(token)
+
         result_user, _ = self.auth.authenticate(request)
         assert result_user.pk == user.pk
-        assert result_user.deleted_at is None
-        assert result_user.is_verified is True
 
     @pytest.mark.django_db
     def test_integrity_error_on_duplicate_email(self):

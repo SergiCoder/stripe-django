@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 import jwt
 from django.conf import settings
@@ -120,40 +121,55 @@ class SupabaseJWTAuthentication(BaseAuthentication):
                     raise AuthenticationFailed(
                         {"detail": "Token missing 'email' claim.", "code": "invalid_token"}
                     ) from None
-                # Check for existing soft-deleted or deactivated accounts
+                # Check for existing deactivated or deleted accounts
                 existing = User.objects.filter(supabase_uid=supabase_uid).first()
-                if existing is not None:
-                    if not existing.is_active:
-                        logger.warning(
-                            "Rejected deactivated account: sub=%s email=%s",
-                            supabase_uid,
-                            email,
-                        )
-                        raise AuthenticationFailed(
-                            {"detail": "Account is deactivated.", "code": "account_deactivated"}
-                        ) from None
-                    # Self-deleted user re-registering with a verified email — reactivate
-                    existing.deleted_at = None
-                    existing.email = email
-                    existing.is_verified = True
-                    existing.save(update_fields=["deleted_at", "email", "is_verified"])
-                    logger.info("Reactivated self-deleted account: sub=%s", supabase_uid)
-                    user = existing
-                else:
-                    try:
-                        user, _ = User.objects.get_or_create(
-                            supabase_uid=supabase_uid,
-                            deleted_at__isnull=True,
-                            defaults={"email": email, "is_verified": True},
-                        )
-                    except IntegrityError:
-                        raise AuthenticationFailed(
-                            {
-                                "detail": "Email already associated with another account.",
-                                "code": "email_conflict",
-                            }
-                        ) from None
+                if existing is not None and not existing.is_active:
+                    logger.warning(
+                        "Rejected deactivated account: sub=%s email=%s",
+                        supabase_uid,
+                        email,
+                    )
+                    raise AuthenticationFailed(
+                        {"detail": "Account is deactivated.", "code": "account_deactivated"}
+                    ) from None
+                if existing is not None and existing.deleted_at is not None:
+                    logger.warning(
+                        "Rejected deleted account: sub=%s email=%s",
+                        supabase_uid,
+                        email,
+                    )
+                    raise AuthenticationFailed(
+                        {"detail": "Account has been deleted.", "code": "account_deleted"}
+                    ) from None
+                full_name = str(user_metadata.get("full_name", "")).strip()
+                try:
+                    user, _ = User.objects.get_or_create(
+                        supabase_uid=supabase_uid,
+                        deleted_at__isnull=True,
+                        defaults={
+                            "email": email,
+                            "full_name": full_name,
+                            "is_verified": True,
+                        },
+                    )
+                except IntegrityError:
+                    raise AuthenticationFailed(
+                        {
+                            "detail": "Email already associated with another account.",
+                            "code": "email_conflict",
+                        }
+                    ) from None
             cache.set(cache_key, user, timeout=_AUTH_CACHE_TTL)
+
+        # Safety net: reject users whose scheduled deletion date has passed
+        # (Celery task hasn't run yet).
+        if user.scheduled_deletion_at is not None and user.scheduled_deletion_at <= datetime.now(
+            UTC
+        ):
+            cache.delete(cache_key)
+            raise AuthenticationFailed(
+                {"detail": "Account has been deleted.", "code": "account_deleted"}
+            )
 
         return (user, token)
 

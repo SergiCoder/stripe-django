@@ -2112,12 +2112,14 @@ name = "saasmint-core-lib"
 version = "0.4.0"
 source = { editable = "core" }
 dependencies = [
+    { name = "httpx" },
     { name = "pydantic", extra = ["email"] },
     { name = "stripe" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.28" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14" },
     { name = "pip-audit", marker = "extra == 'dev'", specifier = ">=2.7" },
     { name = "pydantic", extras = ["email"], specifier = ">=2.12.5" },
