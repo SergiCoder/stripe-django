@@ -135,6 +135,69 @@ class TestAccountViewPATCHEdgeCases:
         user.refresh_from_db()
         assert user.full_name == original_name
 
+    def test_update_phone(self, authed_client, user):
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"phone": {"prefix": "+34", "number": "612345678"}},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["phone"] == {"prefix": "+34", "number": "612345678"}
+        user.refresh_from_db()
+        assert user.phone_prefix == "+34"
+        assert user.phone == "612345678"
+
+    def test_clear_phone(self, authed_client, user):
+        user.phone_prefix = "+1"
+        user.phone = "5551234"
+        user.save(update_fields=["phone_prefix", "phone"])
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"phone": None},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["phone"] is None
+        user.refresh_from_db()
+        assert user.phone_prefix is None
+        assert user.phone is None
+
+    def test_update_timezone(self, authed_client, user):
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"timezone": "Europe/Madrid"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["timezone"] == "Europe/Madrid"
+
+    def test_update_job_title(self, authed_client, user):
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"job_title": "Engineer"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["job_title"] == "Engineer"
+
+    def test_update_pronouns(self, authed_client, user):
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"pronouns": "they/them"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["pronouns"] == "they/them"
+
+    def test_update_bio(self, authed_client, user):
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"bio": "Hello world"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["bio"] == "Hello world"
+
     def test_unauthenticated_patch_rejected(self):
         client = APIClient()
         resp = client.patch("/api/v1/account/", {"full_name": "Hacker"}, format="json")

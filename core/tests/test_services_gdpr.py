@@ -166,6 +166,92 @@ async def test_request_deletion_subscription_already_gone_in_stripe() -> None:
 
 
 @pytest.mark.anyio
+async def test_execute_deletion_user_not_found_raises() -> None:
+    user_repo = InMemoryUserRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    with pytest.raises(UserNotFoundError):
+        await execute_account_deletion(
+            user_id=uuid4(),
+            user_repo=user_repo,
+            customer_repo=customer_repo,
+            subscription_repo=subscription_repo,
+            supabase_url=_SUPABASE_URL,
+            service_role_key=_SERVICE_ROLE_KEY,
+        )
+
+
+@pytest.mark.anyio
+async def test_execute_deletion_customer_no_active_sub() -> None:
+    """Execute deletion with a customer but no active subscription."""
+    user_repo = InMemoryUserRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    user = make_user()
+    await user_repo.save(user)
+    customer = make_stripe_customer(user_id=user.id, stripe_id="cus_no_sub")
+    await customer_repo.save(customer)
+
+    with (
+        patch("stripe.Customer.delete") as mock_cust_del,
+        patch("saasmint_core.services.gdpr.delete_supabase_user", new_callable=AsyncMock),
+        patch("saasmint_core.services.gdpr.delete_supabase_avatar", new_callable=AsyncMock),
+    ):
+        await execute_account_deletion(
+            user_id=user.id,
+            user_repo=user_repo,
+            customer_repo=customer_repo,
+            subscription_repo=subscription_repo,
+            supabase_url=_SUPABASE_URL,
+            service_role_key=_SERVICE_ROLE_KEY,
+        )
+
+    mock_cust_del.assert_called_once_with("cus_no_sub")
+    assert await customer_repo.get_by_id(customer.id) is None
+    assert await user_repo.get_by_id(user.id) is None
+
+
+@pytest.mark.anyio
+async def test_request_deletion_non_resource_missing_stripe_error_raises() -> None:
+    """Non-resource_missing Stripe errors on modify should propagate."""
+    user_repo = InMemoryUserRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    user = make_user()
+    await user_repo.save(user)
+    customer = make_stripe_customer(user_id=user.id)
+    await customer_repo.save(customer)
+    period_end = datetime(2024, 2, 1, tzinfo=UTC)
+    sub = make_subscription(
+        stripe_customer_id=customer.id,
+        stripe_id="sub_err",
+        current_period_end=period_end,
+    )
+    await subscription_repo.save(sub)
+
+    with (
+        patch(
+            "stripe.Subscription.modify",
+            side_effect=stripe.InvalidRequestError(
+                "some other error", param="id", code="other_code"
+            ),  # type: ignore[no-untyped-call]
+        ),
+        pytest.raises(stripe.InvalidRequestError),
+    ):
+        await request_account_deletion(
+            user_id=user.id,
+            user_repo=user_repo,
+            customer_repo=customer_repo,
+            subscription_repo=subscription_repo,
+            supabase_url=_SUPABASE_URL,
+            service_role_key=_SERVICE_ROLE_KEY,
+        )
+
+
+@pytest.mark.anyio
 async def test_execute_deletion_no_customer() -> None:
     user_repo = InMemoryUserRepository()
     customer_repo = InMemoryStripeCustomerRepository()
@@ -291,6 +377,106 @@ async def test_cancel_deletion_clears_schedule_and_reactivates_subscription() ->
         )
 
     mock_modify.assert_called_once_with("sub_reactivate", cancel_at_period_end=False)
+    stored_user = await user_repo.get_by_id(user.id)
+    assert stored_user is not None
+    assert stored_user.scheduled_deletion_at is None
+
+
+@pytest.mark.anyio
+async def test_cancel_deletion_user_not_found_raises() -> None:
+    user_repo = InMemoryUserRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    with pytest.raises(UserNotFoundError):
+        await cancel_account_deletion(
+            user_id=uuid4(),
+            user_repo=user_repo,
+            customer_repo=customer_repo,
+            subscription_repo=subscription_repo,
+        )
+
+
+@pytest.mark.anyio
+async def test_cancel_deletion_stripe_subscription_already_gone() -> None:
+    """resource_missing error on subscription re-enable is swallowed."""
+    user_repo = InMemoryUserRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    user = make_user(scheduled_deletion_at=datetime(2024, 2, 1, tzinfo=UTC))
+    await user_repo.save(user)
+    customer = make_stripe_customer(user_id=user.id)
+    await customer_repo.save(customer)
+    sub = make_subscription(stripe_customer_id=customer.id, stripe_id="sub_gone_cancel")
+    await subscription_repo.save(sub)
+
+    with patch(
+        "stripe.Subscription.modify",
+        side_effect=stripe.InvalidRequestError(
+            "no such subscription", param="id", code="resource_missing"
+        ),  # type: ignore[no-untyped-call]
+    ):
+        await cancel_account_deletion(
+            user_id=user.id,
+            user_repo=user_repo,
+            customer_repo=customer_repo,
+            subscription_repo=subscription_repo,
+        )
+
+    stored_user = await user_repo.get_by_id(user.id)
+    assert stored_user is not None
+    assert stored_user.scheduled_deletion_at is None
+
+
+@pytest.mark.anyio
+async def test_cancel_deletion_stripe_non_resource_missing_raises() -> None:
+    """Non-resource_missing stripe errors should propagate."""
+    user_repo = InMemoryUserRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    user = make_user(scheduled_deletion_at=datetime(2024, 2, 1, tzinfo=UTC))
+    await user_repo.save(user)
+    customer = make_stripe_customer(user_id=user.id)
+    await customer_repo.save(customer)
+    sub = make_subscription(stripe_customer_id=customer.id, stripe_id="sub_err_cancel")
+    await subscription_repo.save(sub)
+
+    with (
+        patch(
+            "stripe.Subscription.modify",
+            side_effect=stripe.InvalidRequestError(
+                "some other error", param="id", code="other_error"
+            ),  # type: ignore[no-untyped-call]
+        ),
+        pytest.raises(stripe.InvalidRequestError),
+    ):
+        await cancel_account_deletion(
+            user_id=user.id,
+            user_repo=user_repo,
+            customer_repo=customer_repo,
+            subscription_repo=subscription_repo,
+        )
+
+
+@pytest.mark.anyio
+async def test_cancel_deletion_no_customer_no_subscription() -> None:
+    """Cancel deletion works even without a Stripe customer."""
+    user_repo = InMemoryUserRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    user = make_user(scheduled_deletion_at=datetime(2024, 2, 1, tzinfo=UTC))
+    await user_repo.save(user)
+
+    await cancel_account_deletion(
+        user_id=user.id,
+        user_repo=user_repo,
+        customer_repo=customer_repo,
+        subscription_repo=subscription_repo,
+    )
+
     stored_user = await user_repo.get_by_id(user.id)
     assert stored_user is not None
     assert stored_user.scheduled_deletion_at is None

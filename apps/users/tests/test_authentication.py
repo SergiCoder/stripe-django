@@ -191,6 +191,66 @@ class TestSupabaseJWTAuthentication:
         assert result_user.pk == user.pk
 
     @pytest.mark.django_db
+    def test_auto_create_persists_full_name_from_metadata(self):
+        """When auto-creating a user, full_name from user_metadata is persisted."""
+        payload = {
+            "sub": "sup_fullname",
+            "email": "fname@example.com",
+            "user_metadata": {"email_verified": True, "full_name": "  Jane Doe  "},
+            "aud": "authenticated",
+            "exp": datetime.now(UTC) + timedelta(hours=1),
+        }
+        token = jwt.encode(payload, SECRET, algorithm="HS256")
+        request = _make_request(token)
+
+        result_user, _ = self.auth.authenticate(request)
+        assert result_user.full_name == "Jane Doe"
+
+    @pytest.mark.django_db
+    def test_auto_create_persists_pronouns_from_metadata(self):
+        """When auto-creating a user, pronouns from user_metadata is persisted."""
+        payload = {
+            "sub": "sup_pronouns",
+            "email": "pronouns@example.com",
+            "user_metadata": {"email_verified": True, "pronouns": " they/them "},
+            "aud": "authenticated",
+            "exp": datetime.now(UTC) + timedelta(hours=1),
+        }
+        token = jwt.encode(payload, SECRET, algorithm="HS256")
+        request = _make_request(token)
+
+        result_user, _ = self.auth.authenticate(request)
+        assert result_user.pronouns == "they/them"
+        # Verify persisted in DB
+        db_user = User.objects.get(supabase_uid="sup_pronouns")
+        assert db_user.pronouns == "they/them"
+
+    @pytest.mark.django_db
+    def test_auto_create_no_pronouns_in_metadata(self):
+        """When user_metadata has no pronouns, pronouns should be None."""
+        token = _make_token(sub="sup_no_pronouns", email="nopronouns@example.com")
+        request = _make_request(token)
+
+        result_user, _ = self.auth.authenticate(request)
+        assert result_user.pronouns is None
+
+    @pytest.mark.django_db
+    def test_auto_create_empty_pronouns_treated_as_none(self):
+        """When user_metadata has empty string pronouns, it should be treated as None."""
+        payload = {
+            "sub": "sup_empty_pronouns",
+            "email": "emptypro@example.com",
+            "user_metadata": {"email_verified": True, "pronouns": ""},
+            "aud": "authenticated",
+            "exp": datetime.now(UTC) + timedelta(hours=1),
+        }
+        token = jwt.encode(payload, SECRET, algorithm="HS256")
+        request = _make_request(token)
+
+        result_user, _ = self.auth.authenticate(request)
+        assert result_user.pronouns is None
+
+    @pytest.mark.django_db
     def test_integrity_error_on_duplicate_email(self):
         """When get_or_create races and hits an IntegrityError (e.g. duplicate email),
         the authentication should raise a clear error."""
