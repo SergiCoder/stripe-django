@@ -69,7 +69,7 @@ class AccountView(APIView):
         if ser.validated_data:
             for field, value in ser.validated_data.items():
                 setattr(user, field, value)
-            user.save(update_fields=list(ser.validated_data.keys()))
+            user.save(update_fields=[*ser.validated_data.keys(), "updated_at"])
 
         return Response(UserSerializer(user).data)
 

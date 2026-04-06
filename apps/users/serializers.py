@@ -82,6 +82,17 @@ class UpdateUserSerializer(serializers.Serializer[User]):
 
         return self._validate_in_set(value, SUPPORTED_CURRENCIES, "currency")
 
+    def validate_timezone(self, value: str | None) -> str | None:
+        if value is None:
+            return value
+        from zoneinfo import available_timezones
+
+        if value not in available_timezones():
+            raise serializers.ValidationError(
+                "Unsupported timezone. Must be a valid IANA timezone identifier."
+            )
+        return value
+
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         phone = attrs.pop("phone", None)
         if phone is not None:
