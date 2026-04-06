@@ -122,6 +122,93 @@ def test_get_by_supabase_uid_excludes_soft_deleted(repo, orm_user):
     assert result is None
 
 
+def test_hard_delete_removes_row(repo, orm_user):
+    async_to_sync(repo.hard_delete)(orm_user.id)
+    assert not User.objects.filter(id=orm_user.id).exists()
+
+
+def test_hard_delete_nonexistent_user_is_noop(repo):
+    async_to_sync(repo.hard_delete)(uuid4())
+
+
+def test_schedule_deletion_sets_timestamp(repo, orm_user):
+    from datetime import timedelta
+
+    scheduled_at = datetime.now(UTC) + timedelta(days=30)
+    async_to_sync(repo.schedule_deletion)(orm_user.id, scheduled_at)
+    orm_user.refresh_from_db()
+    assert orm_user.scheduled_deletion_at == scheduled_at
+
+
+def test_cancel_scheduled_deletion_clears_timestamp(repo, orm_user):
+    from datetime import timedelta
+
+    scheduled_at = datetime.now(UTC) + timedelta(days=30)
+    async_to_sync(repo.schedule_deletion)(orm_user.id, scheduled_at)
+    orm_user.refresh_from_db()
+    assert orm_user.scheduled_deletion_at is not None
+
+    async_to_sync(repo.cancel_scheduled_deletion)(orm_user.id)
+    orm_user.refresh_from_db()
+    assert orm_user.scheduled_deletion_at is None
+
+
+def test_list_pending_deletions_returns_past_due_users(repo, orm_user):
+    from datetime import timedelta
+
+    orm_user.scheduled_deletion_at = datetime.now(UTC) - timedelta(hours=1)
+    orm_user.save(update_fields=["scheduled_deletion_at"])
+
+    result = async_to_sync(repo.list_pending_deletions)()
+    assert len(result) == 1
+    assert result[0].id == orm_user.id
+
+
+def test_list_pending_deletions_excludes_future(repo, orm_user):
+    from datetime import timedelta
+
+    orm_user.scheduled_deletion_at = datetime.now(UTC) + timedelta(days=30)
+    orm_user.save(update_fields=["scheduled_deletion_at"])
+
+    result = async_to_sync(repo.list_pending_deletions)()
+    assert len(result) == 0
+
+
+def test_list_pending_deletions_excludes_soft_deleted(repo, orm_user):
+    from datetime import timedelta
+
+    orm_user.scheduled_deletion_at = datetime.now(UTC) - timedelta(hours=1)
+    orm_user.deleted_at = datetime.now(UTC)
+    orm_user.save(update_fields=["scheduled_deletion_at", "deleted_at"])
+
+    result = async_to_sync(repo.list_pending_deletions)()
+    assert len(result) == 0
+
+
+def test_list_pending_deletions_empty_when_none_scheduled(repo, orm_user):
+    result = async_to_sync(repo.list_pending_deletions)()
+    assert len(result) == 0
+
+
+def test_to_domain_maps_pronouns(repo, orm_user):
+    orm_user.pronouns = "they/them"
+    orm_user.save(update_fields=["pronouns"])
+    domain_user = async_to_sync(repo.get_by_id)(orm_user.id)
+    assert domain_user is not None
+    assert domain_user.pronouns == "they/them"
+
+
+def test_to_domain_maps_scheduled_deletion_at(repo, orm_user):
+    from datetime import timedelta
+
+    scheduled = datetime.now(UTC) + timedelta(days=10)
+    orm_user.scheduled_deletion_at = scheduled
+    orm_user.save(update_fields=["scheduled_deletion_at"])
+    domain_user = async_to_sync(repo.get_by_id)(orm_user.id)
+    assert domain_user is not None
+    assert domain_user.scheduled_deletion_at == scheduled
+
+
 class TestListByOrg:
     @pytest.fixture
     def org(self, orm_user):

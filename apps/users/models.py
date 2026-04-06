@@ -7,6 +7,7 @@ from typing import Any, ClassVar
 
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
 from django.core.cache import cache
+from django.core.validators import MinLengthValidator
 from django.db import models
 
 from apps.users.managers import UserManager
@@ -23,7 +24,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     supabase_uid = models.CharField(max_length=255, unique=True)
     email = models.EmailField(unique=True)
-    full_name = models.CharField(max_length=255, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means name not set (distinguishable from empty string)
+    full_name = models.CharField(max_length=255, validators=[MinLengthValidator(3)])
     avatar_url = models.TextField(blank=True, null=True)  # noqa: DJ001  # nullable TextField intentional: NULL means no avatar set (distinguishable from empty string)
     account_type = models.CharField(
         max_length=20,
@@ -32,12 +33,19 @@ class User(AbstractBaseUser, PermissionsMixin):
     )
     preferred_locale = models.CharField(max_length=10, default="en")
     preferred_currency = models.CharField(max_length=3, default="usd")
+    phone_prefix = models.CharField(max_length=5, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means prefix not set (e.g. "+34")
+    phone = models.CharField(max_length=15, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means phone not set
+    timezone = models.CharField(max_length=50, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means timezone not set
+    job_title = models.CharField(max_length=100, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means job title not set
+    pronouns = models.CharField(max_length=50, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means "don't specify"
+    bio = models.TextField(blank=True, null=True)  # noqa: DJ001  # nullable TextField intentional: NULL means bio not set
     is_verified = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    scheduled_deletion_at = models.DateTimeField(null=True, blank=True, db_index=True)
 
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS: ClassVar[list[str]] = ["supabase_uid"]

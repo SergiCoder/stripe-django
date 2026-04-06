@@ -159,9 +159,10 @@ REST_FRAMEWORK = {
         "user": "1000/hour",
         "auth": "10/minute",
         "billing": "30/hour",
-        "account": "10/hour",
+        "account": "120/hour",
         "account_export": "3/hour",
         "orgs": "60/hour",
+        "references": "120/hour",
     },
     "EXCEPTION_HANDLER": "middleware.exceptions.domain_exception_handler",
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
@@ -196,6 +197,12 @@ CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "UTC"
+CELERY_BEAT_SCHEDULE = {
+    "process-scheduled-deletions": {
+        "task": "apps.users.tasks.process_scheduled_deletions",
+        "schedule": 3600,  # every hour
+    },
+}
 
 # Stripe
 STRIPE_SECRET_KEY = env.stripe_secret_key

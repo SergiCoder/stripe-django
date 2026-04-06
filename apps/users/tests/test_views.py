@@ -135,6 +135,149 @@ class TestAccountViewPATCHEdgeCases:
         user.refresh_from_db()
         assert user.full_name == original_name
 
+    def test_update_phone(self, authed_client, user):
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"phone": {"prefix": "+34", "number": "612345678"}},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["phone"] == {"prefix": "+34", "number": "612345678"}
+        user.refresh_from_db()
+        assert user.phone_prefix == "+34"
+        assert user.phone == "612345678"
+
+    def test_clear_phone(self, authed_client, user):
+        user.phone_prefix = "+1"
+        user.phone = "5551234"
+        user.save(update_fields=["phone_prefix", "phone"])
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"phone": None},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["phone"] is None
+        user.refresh_from_db()
+        assert user.phone_prefix is None
+        assert user.phone is None
+
+    def test_update_timezone(self, authed_client, user):
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"timezone": "Europe/Madrid"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["timezone"] == "Europe/Madrid"
+
+    def test_update_job_title(self, authed_client, user):
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"job_title": "Engineer"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["job_title"] == "Engineer"
+
+    def test_update_pronouns(self, authed_client, user):
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"pronouns": "they/them"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["pronouns"] == "they/them"
+
+    def test_update_bio(self, authed_client, user):
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"bio": "Hello world"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["bio"] == "Hello world"
+
+    def test_update_invalid_phone_prefix_returns_400(self, authed_client):
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"phone": {"prefix": "+9999", "number": "123456"}},
+            format="json",
+        )
+        assert resp.status_code == 400
+
+    def test_update_bio_max_length_returns_400(self, authed_client):
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"bio": "x" * 501},
+            format="json",
+        )
+        assert resp.status_code == 400
+
+    def test_update_job_title_max_length_returns_400(self, authed_client):
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"job_title": "x" * 101},
+            format="json",
+        )
+        assert resp.status_code == 400
+
+    def test_update_pronouns_max_length_returns_400(self, authed_client):
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"pronouns": "x" * 51},
+            format="json",
+        )
+        assert resp.status_code == 400
+
+    def test_clear_timezone(self, authed_client, user):
+        user.timezone = "Europe/Madrid"
+        user.save(update_fields=["timezone"])
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"timezone": None},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["timezone"] is None
+        user.refresh_from_db()
+        assert user.timezone is None
+
+    def test_clear_bio(self, authed_client, user):
+        user.bio = "Some bio"
+        user.save(update_fields=["bio"])
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"bio": None},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["bio"] is None
+        user.refresh_from_db()
+        assert user.bio is None
+
+    def test_clear_job_title(self, authed_client, user):
+        user.job_title = "Engineer"
+        user.save(update_fields=["job_title"])
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"job_title": None},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["job_title"] is None
+
+    def test_clear_pronouns(self, authed_client, user):
+        user.pronouns = "she/her"
+        user.save(update_fields=["pronouns"])
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"pronouns": None},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["pronouns"] is None
+
     def test_unauthenticated_patch_rejected(self):
         client = APIClient()
         resp = client.patch("/api/v1/account/", {"full_name": "Hacker"}, format="json")
@@ -144,17 +287,44 @@ class TestAccountViewPATCHEdgeCases:
 @pytest.mark.django_db
 class TestAccountViewDELETE:
     @patch("apps.users.views._billing_repos", return_value=(MagicMock(), MagicMock()))
-    @patch("apps.users.views.delete_user_data", new_callable=AsyncMock)
-    def test_delete_calls_gdpr_service(self, mock_delete, _mock_repos, authed_client, user):
+    @patch("apps.users.views.request_account_deletion", new_callable=AsyncMock, return_value=None)
+    def test_delete_immediate_returns_204(self, mock_delete, _mock_repos, authed_client, user):
         resp = authed_client.delete("/api/v1/account/")
         assert resp.status_code == 204
         mock_delete.assert_called_once()
         call_kwargs = mock_delete.call_args.kwargs
         assert call_kwargs["user_id"] == user.id
 
+    @patch("apps.users.views._billing_repos", return_value=(MagicMock(), MagicMock()))
+    @patch("apps.users.views.request_account_deletion", new_callable=AsyncMock)
+    def test_delete_scheduled_returns_200(self, mock_delete, _mock_repos, authed_client, user):
+        from datetime import UTC, datetime
+
+        scheduled = datetime(2024, 2, 1, tzinfo=UTC)
+        mock_delete.return_value = scheduled
+        resp = authed_client.delete("/api/v1/account/")
+        assert resp.status_code == 200
+        assert resp.json()["scheduled_deletion_at"] == scheduled.isoformat()
+
     def test_unauthenticated_delete_rejected(self):
         client = APIClient()
         resp = client.delete("/api/v1/account/")
+        assert resp.status_code in (401, 403)
+
+
+@pytest.mark.django_db
+class TestCancelDeletionView:
+    @patch("apps.users.views._billing_repos", return_value=(MagicMock(), MagicMock()))
+    @patch("apps.users.views.cancel_account_deletion", new_callable=AsyncMock)
+    def test_cancel_deletion_returns_user(self, mock_cancel, _mock_repos, authed_client, user):
+        resp = authed_client.post("/api/v1/account/cancel-deletion/")
+        assert resp.status_code == 200
+        mock_cancel.assert_called_once()
+        assert resp.json()["id"] == str(user.id)
+
+    def test_unauthenticated_cancel_deletion_rejected(self):
+        client = APIClient()
+        resp = client.post("/api/v1/account/cancel-deletion/")
         assert resp.status_code in (401, 403)
 
 

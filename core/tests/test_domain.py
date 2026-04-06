@@ -33,6 +33,7 @@ def test_user_creation() -> None:
         id=uuid4(),
         supabase_uid="sup_123",
         email="alice@example.com",
+        full_name="Alice Example",
         created_at=NOW,
     )
     assert user.email == "alice@example.com"
@@ -40,7 +41,7 @@ def test_user_creation() -> None:
     assert user.preferred_locale == "en"
     assert user.preferred_currency == "usd"
     assert user.is_verified is False
-    assert user.full_name is None
+    assert user.full_name == "Alice Example"
     assert user.avatar_url is None
     assert user.deleted_at is None
 
@@ -67,7 +68,7 @@ def test_user_with_all_fields() -> None:
 
 
 def test_user_is_frozen() -> None:
-    user = User(id=uuid4(), supabase_uid="s", email="a@b.com", created_at=NOW)
+    user = User(id=uuid4(), supabase_uid="s", email="a@b.com", full_name="Test", created_at=NOW)
     with pytest.raises(ValidationError):
         user.email = "other@b.com"  # type: ignore[misc]  # intentional: testing that frozen dataclass raises ValidationError on mutation
 
@@ -79,7 +80,7 @@ def test_account_type_values() -> None:
 
 def test_user_invalid_email() -> None:
     with pytest.raises(ValidationError):
-        User(id=uuid4(), supabase_uid="s", email="not-an-email", created_at=NOW)
+        User(id=uuid4(), supabase_uid="s", email="not-an-email", full_name="Test", created_at=NOW)
 
 
 # ── Org ───────────────────────────────────────────────────────────────────────

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 import stripe
@@ -13,6 +16,16 @@ from saasmint_core.exceptions import UserNotFoundError
 from saasmint_core.repositories.customer import StripeCustomerRepository
 from saasmint_core.repositories.subscription import SubscriptionRepository
 from saasmint_core.repositories.user import UserRepository
+from saasmint_core.services.supabase_admin import delete_supabase_avatar, delete_supabase_user
+
+
+async def _stripe_request(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+    """Run a Stripe SDK call in a thread, ignoring 'resource_missing' errors."""
+    try:
+        await asyncio.to_thread(fn, *args, **kwargs)
+    except stripe.InvalidRequestError as exc:
+        if exc.code != "resource_missing":
+            raise
 
 
 async def _load_user_and_customer(
@@ -30,7 +43,102 @@ async def _load_user_and_customer(
     return user, customer
 
 
-async def delete_user_data(
+async def request_account_deletion(
+    *,
+    user_id: UUID,
+    user_repo: UserRepository,
+    customer_repo: StripeCustomerRepository,
+    subscription_repo: SubscriptionRepository,
+    supabase_url: str,
+    service_role_key: str,
+) -> datetime | None:
+    """
+    Request GDPR right-to-erasure account deletion.
+
+    Returns:
+        None — account deleted immediately (no active subscription).
+        datetime — scheduled deletion date (subscription period end).
+    """
+    _, customer = await _load_user_and_customer(user_id, user_repo, customer_repo)
+
+    active_sub = None
+    if customer:
+        active_sub = await subscription_repo.get_active_for_customer(customer.id)
+
+    if active_sub:
+        # Cancel renewal, schedule deletion for period end
+        await _stripe_request(
+            stripe.Subscription.modify,
+            active_sub.stripe_id,
+            cancel_at_period_end=True,
+        )
+
+        scheduled_at = active_sub.current_period_end
+        await user_repo.schedule_deletion(user_id, scheduled_at)
+        return scheduled_at
+
+    # No active subscription — delete immediately
+    await execute_account_deletion(
+        user_id=user_id,
+        user_repo=user_repo,
+        customer_repo=customer_repo,
+        subscription_repo=subscription_repo,
+        supabase_url=supabase_url,
+        service_role_key=service_role_key,
+    )
+    return None
+
+
+async def execute_account_deletion(
+    *,
+    user_id: UUID,
+    user_repo: UserRepository,
+    customer_repo: StripeCustomerRepository,
+    subscription_repo: SubscriptionRepository,
+    supabase_url: str,
+    service_role_key: str,
+) -> None:
+    """
+    Execute GDPR right-to-erasure — permanently remove all user data.
+
+    Called immediately when there is no active subscription, or by the
+    scheduled-deletion Celery task after the subscription period ends.
+
+    Sequence:
+    1. Cancel any active Stripe subscription immediately.
+    2. Delete the Stripe Customer object (removes stored payment methods).
+    3. Delete our StripeCustomer record.
+    4. Delete the Supabase avatar and Auth user (in parallel).
+    5. Hard-delete the user row (cascades to OrgMember, etc.).
+    """
+    user, customer = await _load_user_and_customer(user_id, user_repo, customer_repo)
+
+    if customer:
+        active_sub = await subscription_repo.get_active_for_customer(customer.id)
+        if active_sub:
+            await _stripe_request(stripe.Subscription.cancel, active_sub.stripe_id)
+
+        await _stripe_request(stripe.Customer.delete, customer.stripe_id)
+
+        await customer_repo.delete(customer.id)
+
+    await asyncio.gather(
+        delete_supabase_avatar(
+            supabase_url=supabase_url,
+            service_role_key=service_role_key,
+            avatar_url=user.avatar_url,
+        ),
+        delete_supabase_user(
+            supabase_url=supabase_url,
+            service_role_key=service_role_key,
+            supabase_uid=user.supabase_uid,
+        ),
+    )
+
+    await user_repo.hard_delete(user_id)
+
+
+async def cancel_account_deletion(
     *,
     user_id: UUID,
     user_repo: UserRepository,
@@ -38,34 +146,26 @@ async def delete_user_data(
     subscription_repo: SubscriptionRepository,
 ) -> None:
     """
-    GDPR right to erasure — permanently remove all user data and Stripe resources.
+    Cancel a previously scheduled account deletion.
 
-    Sequence:
-    1. Cancel any active Stripe subscription immediately (no grace period).
-    2. Delete the Stripe Customer object (removes stored payment methods).
-    3. Delete our StripeCustomer record.
-    4. Soft-delete the user (sets deleted_at).
+    Re-enables subscription renewal and clears the scheduled deletion date.
     """
-    _, customer = await _load_user_and_customer(user_id, user_repo, customer_repo)
+    user, customer = await _load_user_and_customer(user_id, user_repo, customer_repo)
 
+    if user.scheduled_deletion_at is None:
+        return
+
+    # Re-enable subscription renewal
     if customer:
         active_sub = await subscription_repo.get_active_for_customer(customer.id)
         if active_sub:
-            try:
-                await asyncio.to_thread(stripe.Subscription.cancel, active_sub.stripe_id)
-            except stripe.InvalidRequestError as exc:
-                if exc.code != "resource_missing":
-                    raise
+            await _stripe_request(
+                stripe.Subscription.modify,
+                active_sub.stripe_id,
+                cancel_at_period_end=False,
+            )
 
-        try:
-            await asyncio.to_thread(stripe.Customer.delete, customer.stripe_id)
-        except stripe.InvalidRequestError as exc:
-            if exc.code != "resource_missing":
-                raise
-
-        await customer_repo.delete(customer.id)
-
-    await user_repo.delete(user_id)
+    await user_repo.cancel_scheduled_deletion(user_id)
 
 
 async def export_user_data(

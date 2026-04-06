@@ -46,7 +46,7 @@ services:
     build:
       context: .
       dockerfile: infra/Dockerfile
-    entrypoint: ["/app/entrypoint.dev.sh"]
+    entrypoint: ["/app/infra/entrypoint.dev.sh"]
     ports:
       - "8001:8001"
     env_file:
@@ -62,7 +62,6 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
-      - ./infra/entrypoint.dev.sh:/app/entrypoint.dev.sh:ro
 
   # ─── Celery worker ────────────────────────────────────────────────────────
 

@@ -2,9 +2,10 @@
 
 from django.urls import path
 
-from apps.users.views import AccountExportView, AccountView
+from apps.users.views import AccountExportView, AccountView, CancelDeletionView
 
 urlpatterns = [
     path("", AccountView.as_view(), name="account"),
     path("export/", AccountExportView.as_view(), name="account-export"),
+    path("cancel-deletion/", CancelDeletionView.as_view(), name="cancel-deletion"),
 ]
