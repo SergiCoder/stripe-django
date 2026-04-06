@@ -89,3 +89,46 @@ class TestUserModel:
         import uuid
 
         assert isinstance(user.pk, uuid.UUID)
+
+    def test_new_fields_default_to_none(self):
+        user = User.objects.create_user(email="defaults@example.com", supabase_uid="sup_defaults")
+        assert user.phone_prefix is None
+        assert user.phone is None
+        assert user.timezone is None
+        assert user.job_title is None
+        assert user.pronouns is None
+        assert user.bio is None
+        assert user.scheduled_deletion_at is None
+
+    def test_new_fields_can_be_set(self):
+        user = User.objects.create_user(
+            email="fields@example.com",
+            supabase_uid="sup_fields",
+            full_name="Field User",
+            phone_prefix="+34",
+            phone="612345678",
+            timezone="Europe/Madrid",
+            job_title="Engineer",
+            pronouns="they/them",
+            bio="A brief bio",
+        )
+        assert user.phone_prefix == "+34"
+        assert user.phone == "612345678"
+        assert user.timezone == "Europe/Madrid"
+        assert user.job_title == "Engineer"
+        assert user.pronouns == "they/them"
+        assert user.bio == "A brief bio"
+
+    def test_scheduled_deletion_at_can_be_set_and_cleared(self):
+        user = User.objects.create_user(email="sched@example.com", supabase_uid="sup_sched")
+        assert user.scheduled_deletion_at is None
+
+        user.scheduled_deletion_at = datetime.now(UTC)
+        user.save(update_fields=["scheduled_deletion_at"])
+        user.refresh_from_db()
+        assert user.scheduled_deletion_at is not None
+
+        user.scheduled_deletion_at = None
+        user.save(update_fields=["scheduled_deletion_at"])
+        user.refresh_from_db()
+        assert user.scheduled_deletion_at is None

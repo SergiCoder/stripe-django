@@ -198,6 +198,86 @@ class TestAccountViewPATCHEdgeCases:
         assert resp.status_code == 200
         assert resp.data["bio"] == "Hello world"
 
+    def test_update_invalid_phone_prefix_returns_400(self, authed_client):
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"phone": {"prefix": "+9999", "number": "123456"}},
+            format="json",
+        )
+        assert resp.status_code == 400
+
+    def test_update_bio_max_length_returns_400(self, authed_client):
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"bio": "x" * 501},
+            format="json",
+        )
+        assert resp.status_code == 400
+
+    def test_update_job_title_max_length_returns_400(self, authed_client):
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"job_title": "x" * 101},
+            format="json",
+        )
+        assert resp.status_code == 400
+
+    def test_update_pronouns_max_length_returns_400(self, authed_client):
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"pronouns": "x" * 51},
+            format="json",
+        )
+        assert resp.status_code == 400
+
+    def test_clear_timezone(self, authed_client, user):
+        user.timezone = "Europe/Madrid"
+        user.save(update_fields=["timezone"])
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"timezone": None},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["timezone"] is None
+        user.refresh_from_db()
+        assert user.timezone is None
+
+    def test_clear_bio(self, authed_client, user):
+        user.bio = "Some bio"
+        user.save(update_fields=["bio"])
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"bio": None},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["bio"] is None
+        user.refresh_from_db()
+        assert user.bio is None
+
+    def test_clear_job_title(self, authed_client, user):
+        user.job_title = "Engineer"
+        user.save(update_fields=["job_title"])
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"job_title": None},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["job_title"] is None
+
+    def test_clear_pronouns(self, authed_client, user):
+        user.pronouns = "she/her"
+        user.save(update_fields=["pronouns"])
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"pronouns": None},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["pronouns"] is None
+
     def test_unauthenticated_patch_rejected(self):
         client = APIClient()
         resp = client.patch("/api/v1/account/", {"full_name": "Hacker"}, format="json")

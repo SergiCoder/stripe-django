@@ -194,3 +194,40 @@ class TestUpdateUserSerializer:
     def test_bio_null_accepted(self):
         ser = UpdateUserSerializer(data={"bio": None})
         assert ser.is_valid(), ser.errors
+
+    def test_bio_max_length_rejected(self):
+        ser = UpdateUserSerializer(data={"bio": "x" * 501})
+        assert not ser.is_valid()
+        assert "bio" in ser.errors
+
+    def test_bio_at_max_length_accepted(self):
+        ser = UpdateUserSerializer(data={"bio": "x" * 500})
+        assert ser.is_valid(), ser.errors
+
+    def test_phone_number_max_length_rejected(self):
+        ser = UpdateUserSerializer(data={"phone": {"prefix": "+1", "number": "1" * 16}})
+        assert not ser.is_valid()
+        assert "phone" in ser.errors
+
+    def test_phone_prefix_max_length_rejected(self):
+        ser = UpdateUserSerializer(data={"phone": {"prefix": "+12345", "number": "123456"}})
+        assert not ser.is_valid()
+        assert "phone" in ser.errors
+
+    def test_phone_missing_prefix_rejected(self):
+        ser = UpdateUserSerializer(data={"phone": {"number": "5551234567"}})
+        assert not ser.is_valid()
+        assert "phone" in ser.errors
+
+    def test_timezone_max_length_rejected(self):
+        ser = UpdateUserSerializer(data={"timezone": "x" * 51})
+        assert not ser.is_valid()
+        assert "timezone" in ser.errors
+
+    def test_pronouns_null_accepted(self):
+        ser = UpdateUserSerializer(data={"pronouns": None})
+        assert ser.is_valid(), ser.errors
+
+    def test_job_title_null_accepted(self):
+        ser = UpdateUserSerializer(data={"job_title": None})
+        assert ser.is_valid(), ser.errors

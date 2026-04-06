@@ -315,6 +315,78 @@ class TestSupabaseJWTAuthentication:
             with pytest.raises(AuthenticationFailed, match="Unsupported token algorithm"):
                 self.auth.authenticate(request)
 
+    @pytest.mark.django_db
+    def test_auto_create_missing_full_name_defaults_to_unknown(self):
+        """When user_metadata has no full_name, it defaults to 'Unknown'."""
+        payload = {
+            "sub": "sup_no_name",
+            "email": "noname@example.com",
+            "user_metadata": {"email_verified": True},
+            "aud": "authenticated",
+            "exp": datetime.now(UTC) + timedelta(hours=1),
+        }
+        token = jwt.encode(payload, SECRET, algorithm="HS256")
+        request = _make_request(token)
+
+        result_user, _ = self.auth.authenticate(request)
+        assert result_user.full_name == "Unknown"
+
+    @pytest.mark.django_db
+    def test_auto_create_empty_full_name_defaults_to_unknown(self):
+        """When user_metadata has empty/whitespace full_name, it defaults to 'Unknown'."""
+        payload = {
+            "sub": "sup_empty_name",
+            "email": "emptyname@example.com",
+            "user_metadata": {"email_verified": True, "full_name": "   "},
+            "aud": "authenticated",
+            "exp": datetime.now(UTC) + timedelta(hours=1),
+        }
+        token = jwt.encode(payload, SECRET, algorithm="HS256")
+        request = _make_request(token)
+
+        result_user, _ = self.auth.authenticate(request)
+        assert result_user.full_name == "Unknown"
+
+    @pytest.mark.django_db
+    def test_scheduled_deletion_exactly_now_is_rejected(self):
+        """A user whose scheduled_deletion_at is in the recent past is rejected."""
+        user = User.objects.create_user(
+            email="exact@example.com",
+            supabase_uid="sup_exact",
+        )
+        user.scheduled_deletion_at = datetime.now(UTC) - timedelta(seconds=1)
+        user.save()
+        token = _make_token(sub="sup_exact", email="exact@example.com")
+        request = _make_request(token)
+
+        with pytest.raises(AuthenticationFailed) as exc_info:
+            self.auth.authenticate(request)
+        assert exc_info.value.detail["code"] == "account_deleted"
+
+    def test_expired_token_error_code(self):
+        """Expired token should return structured error with token_expired code."""
+        token = _make_token(exp_delta=timedelta(hours=-1))
+        request = _make_request(token)
+        with pytest.raises(AuthenticationFailed) as exc_info:
+            self.auth.authenticate(request)
+        assert exc_info.value.detail["code"] == "token_expired"
+
+    def test_email_not_verified_error_code(self):
+        """Unverified email should return structured error with email_not_verified code."""
+        token = _make_token(email_verified=False)
+        request = _make_request(token)
+        with pytest.raises(AuthenticationFailed) as exc_info:
+            self.auth.authenticate(request)
+        assert exc_info.value.detail["code"] == "email_not_verified"
+
+    def test_missing_sub_error_code(self):
+        """Missing sub claim should return structured error with invalid_token code."""
+        token = _make_token(sub="")
+        request = _make_request(token)
+        with pytest.raises(AuthenticationFailed) as exc_info:
+            self.auth.authenticate(request)
+        assert exc_info.value.detail["code"] == "invalid_token"
+
 
 class TestAsymmetricJWTAuthentication:
     """Tests for RS256 and ES256 (JWKS-based) authentication paths."""
