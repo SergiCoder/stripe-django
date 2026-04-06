@@ -92,6 +92,7 @@ class DjangoSubscriptionRepository:
             id=obj.id,
             stripe_id=obj.stripe_id,
             stripe_customer_id=obj.stripe_customer_id,
+            user_id=obj.user_id,
             status=SubscriptionStatus(obj.status),
             plan_id=obj.plan_id,
             quantity=obj.quantity,
@@ -122,7 +123,16 @@ class DjangoSubscriptionRepository:
             return None
 
     async def get_active_for_user(self, user_id: UUID) -> Subscription | None:
-        return await self._get_latest_active(stripe_customer__user_id=user_id)
+        from django.db.models import Q
+
+        try:
+            obj = await SubscriptionModel.objects.filter(
+                Q(user_id=user_id) | Q(stripe_customer__user_id=user_id),
+                status__in=ACTIVE_SUBSCRIPTION_STATUSES,
+            ).alatest("created_at")
+            return self._to_domain(obj)
+        except SubscriptionModel.DoesNotExist:
+            return None
 
     async def get_active_for_customer(self, stripe_customer_id: UUID) -> Subscription | None:
         try:
@@ -146,6 +156,7 @@ class DjangoSubscriptionRepository:
             defaults={
                 "stripe_id": subscription.stripe_id,
                 "stripe_customer_id": subscription.stripe_customer_id,
+                "user_id": subscription.user_id,
                 "status": subscription.status.value,
                 "plan_id": subscription.plan_id,
                 "quantity": subscription.quantity,

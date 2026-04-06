@@ -60,8 +60,9 @@ class Subscription(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     id: UUID
-    stripe_id: str
-    stripe_customer_id: UUID
+    stripe_id: str | None = None
+    stripe_customer_id: UUID | None = None
+    user_id: UUID | None = None
     status: SubscriptionStatus
     plan_id: UUID
     quantity: int = 1
@@ -73,3 +74,8 @@ class Subscription(BaseModel):
     current_period_end: datetime
     canceled_at: datetime | None = None
     created_at: datetime
+
+    @property
+    def is_free(self) -> bool:
+        """True when this subscription has no Stripe backing (free plan)."""
+        return self.stripe_id is None

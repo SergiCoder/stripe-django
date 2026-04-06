@@ -106,9 +106,20 @@ class StripeCustomer(models.Model):
 
 class Subscription(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    stripe_id = models.CharField(max_length=255, unique=True)
+    stripe_id = models.CharField(max_length=255, unique=True, null=True, blank=True)
     stripe_customer = models.ForeignKey(
-        StripeCustomer, on_delete=models.CASCADE, related_name="subscriptions"
+        StripeCustomer,
+        on_delete=models.CASCADE,
+        related_name="subscriptions",
+        null=True,
+        blank=True,
+    )
+    user = models.ForeignKey(
+        "users.User",
+        on_delete=models.CASCADE,
+        related_name="subscriptions",
+        null=True,
+        blank=True,
     )
     status = models.CharField(
         max_length=30, choices=SubscriptionStatus.choices, default=SubscriptionStatus.INCOMPLETE
