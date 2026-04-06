@@ -1,0 +1,50 @@
+"""Billing app services — local subscription management."""
+
+from __future__ import annotations
+
+import logging
+from datetime import UTC, datetime
+
+from apps.billing.models import Plan, Subscription, SubscriptionStatus
+from apps.users.models import User
+
+logger = logging.getLogger(__name__)
+
+# Far-future date used as current_period_end for free subscriptions
+_FREE_PERIOD_END = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
+
+
+def _get_free_plan() -> Plan | None:
+    """Return the active personal plan where every price is $0, or None."""
+    return (
+        Plan.objects.filter(is_active=True, context="personal")
+        .exclude(prices__amount__gt=0)
+        .filter(prices__isnull=False)
+        .distinct()
+        .first()
+    )
+
+
+def assign_free_plan(user: User) -> None:
+    """Create a free Subscription for *user*.
+
+    Idempotent: skips if the user already has any subscription.
+    Does nothing if no free plan exists in the database.
+    """
+    free_plan = _get_free_plan()
+    if free_plan is None:
+        logger.warning("No free plan found; skipping free subscription for user %s", user.id)
+        return
+
+    if Subscription.objects.filter(user=user).exists():
+        return
+
+    now = datetime.now(UTC)
+    Subscription.objects.create(
+        user=user,
+        status=SubscriptionStatus.ACTIVE,
+        plan=free_plan,
+        quantity=1,
+        current_period_start=now,
+        current_period_end=_FREE_PERIOD_END,
+    )
