@@ -49,10 +49,10 @@ class TestPlanListView:
         resp2 = authed_client.get("/api/v1/billing/plans/")
         assert resp1.data == resp2.data
 
-    def test_unauthenticated_rejected(self):
+    def test_unauthenticated_allowed(self, plan, plan_price):
         client = APIClient()
         resp = client.get("/api/v1/billing/plans/")
-        assert resp.status_code in (401, 403)
+        assert resp.status_code == 200
 
 
 @pytest.mark.django_db

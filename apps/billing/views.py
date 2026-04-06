@@ -12,6 +12,7 @@ from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import serializers as drf_serializers
 from rest_framework import status
 from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
@@ -92,7 +93,9 @@ def _get_active_plan_price(stripe_price_id: str) -> PlanPrice:
 
 
 class PlanListView(APIView):
-    """GET /api/v1/billing/plans — list active plans with prices."""
+    """GET /api/v1/billing/plans — list active plans with prices (public)."""
+
+    permission_classes = [AllowAny]
 
     @extend_schema(responses=PlanSerializer(many=True), tags=["billing"])
     def get(self, request: Request) -> Response:
