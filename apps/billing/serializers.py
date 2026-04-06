@@ -47,7 +47,7 @@ class PlanSerializer(serializers.ModelSerializer[Plan]):
 
     class Meta:
         model = Plan
-        fields = ("id", "name", "context", "interval", "is_active", "prices")
+        fields = ("id", "name", "description", "context", "interval", "is_active", "prices")
         read_only_fields = fields
 
 

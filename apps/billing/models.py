@@ -37,6 +37,7 @@ ACTIVE_SUBSCRIPTION_STATUSES = tuple(SubscriptionStatus(s.value) for s in _CORE_
 class Plan(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255)
+    description = models.TextField(default="", blank=True)
     context = models.CharField(max_length=20, choices=PlanContext.choices)
     interval = models.CharField(max_length=10, choices=PlanInterval.choices)
     is_active = models.BooleanField(default=True)

@@ -170,6 +170,7 @@ class DjangoPlanRepository:
         return Plan(
             id=obj.id,
             name=obj.name,
+            description=obj.description,
             context=PlanContext(obj.context),
             interval=PlanInterval(obj.interval),
             is_active=obj.is_active,

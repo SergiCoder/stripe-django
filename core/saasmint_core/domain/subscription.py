@@ -40,6 +40,7 @@ class Plan(BaseModel):
 
     id: UUID
     name: str
+    description: str = ""
     context: PlanContext
     interval: PlanInterval
     is_active: bool = True

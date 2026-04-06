@@ -202,24 +202,34 @@ PLANS = [
     {
         "key": "personal_free_monthly",
         "name": "Personal Free",
+        "description": (
+            "For individuals getting started. Includes basic analytics and community support."
+        ),
         "context": PlanContext.PERSONAL,
         "interval": PlanInterval.MONTH,
     },
     {
         "key": "personal_pro_monthly",
         "name": "Personal Pro",
+        "description": (
+            "For power users. Advanced analytics, priority email support, and API access."
+        ),
         "context": PlanContext.PERSONAL,
         "interval": PlanInterval.MONTH,
     },
     {
         "key": "team_basic_monthly",
         "name": "Team Basic",
+        "description": ("For small teams. Up to 10 seats, shared dashboards, and team analytics."),
         "context": PlanContext.TEAM,
         "interval": PlanInterval.MONTH,
     },
     {
         "key": "team_pro_monthly",
         "name": "Team Pro",
+        "description": (
+            "For growing organizations. Unlimited seats, SSO, audit logs, and dedicated support."
+        ),
         "context": PlanContext.TEAM,
         "interval": PlanInterval.MONTH,
     },
@@ -274,7 +284,13 @@ class Command(BaseCommand):
     def _seed_plans(self) -> dict[str, Plan]:
         existing = {p.name: p for p in Plan.objects.filter(name__in=[p["name"] for p in PLANS])}
         new_plans = [
-            Plan(name=p["name"], context=p["context"], interval=p["interval"], is_active=True)
+            Plan(
+                name=p["name"],
+                description=p["description"],
+                context=p["context"],
+                interval=p["interval"],
+                is_active=True,
+            )
             for p in PLANS
             if p["name"] not in existing
         ]
