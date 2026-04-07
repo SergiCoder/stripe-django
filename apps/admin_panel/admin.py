@@ -1,5 +1,7 @@
 """Extended Django admin — re-registers User with subscription status column and sets site_url to /dashboard/."""  # noqa: E501
 
+from typing import ClassVar
+
 from django.contrib import admin
 from django.db.models import OuterRef, Q, QuerySet, Subquery
 from django.http import HttpRequest
@@ -16,6 +18,32 @@ admin.site.site_url = "/dashboard/"
 admin.site.unregister(User)
 
 
+class DeletionStateFilter(admin.SimpleListFilter):
+    """Filter users by GDPR deletion state (active / pending deletion / deleted)."""
+
+    title = "deletion state"
+    parameter_name = "deletion_state"
+
+    def lookups(
+        self, request: HttpRequest, model_admin: admin.ModelAdmin  # type: ignore[type-arg]
+    ) -> list[tuple[str, str]]:
+        return [
+            ("active", "Active (not deleted)"),
+            ("pending", "Pending deletion"),
+            ("deleted", "Deleted"),
+        ]
+
+    def queryset(self, request: HttpRequest, queryset: QuerySet[User]) -> QuerySet[User]:
+        value = self.value()
+        if value == "active":
+            return queryset.filter(deleted_at__isnull=True, scheduled_deletion_at__isnull=True)
+        if value == "pending":
+            return queryset.filter(deleted_at__isnull=True, scheduled_deletion_at__isnull=False)
+        if value == "deleted":
+            return queryset.filter(deleted_at__isnull=False)
+        return queryset
+
+
 @admin.register(User)
 class UserAdminExtended(UserAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic but UserAdmin inherits from BaseUserAdmin which doesn't declare its type parameter
     list_display = (
@@ -25,7 +53,16 @@ class UserAdminExtended(UserAdmin):  # type: ignore[type-arg]  # django-stubs Mo
         "subscription_status",
         "is_verified",
         "is_active",
+        "scheduled_deletion_at",
+        "deleted_at",
         "created_at",
+    )
+    list_filter: ClassVar[tuple[object, ...]] = (
+        DeletionStateFilter,
+        "account_type",
+        "is_active",
+        "is_staff",
+        "is_verified",
     )
 
     def get_queryset(self, request: HttpRequest) -> QuerySet[User]:
