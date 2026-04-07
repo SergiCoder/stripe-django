@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from django.db.models import Q
 from saasmint_core.domain.product import Product, ProductPrice, ProductType
 from saasmint_core.domain.stripe_customer import StripeCustomer
 from saasmint_core.domain.stripe_event import StripeEvent
@@ -123,8 +124,6 @@ class DjangoSubscriptionRepository:
             return None
 
     async def get_active_for_user(self, user_id: UUID) -> Subscription | None:
-        from django.db.models import Q
-
         try:
             obj = await SubscriptionModel.objects.filter(
                 Q(user_id=user_id) | Q(stripe_customer__user_id=user_id),
@@ -215,11 +214,7 @@ class DjangoPlanRepository:
         return [self._plan_to_domain(obj) async for obj in PlanModel.objects.filter(is_active=True)]
 
     async def get_free_plan(self) -> Plan | None:
-        obj = await (
-            PlanModel.objects.filter(is_active=True, context="personal", price__amount=0)
-            .select_related("price")
-            .afirst()
-        )
+        obj = await PlanModel.free_plans().afirst()
         return self._plan_to_domain(obj) if obj is not None else None
 
     async def get_price(self, plan_id: UUID) -> PlanPrice | None:

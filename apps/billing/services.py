@@ -13,22 +13,13 @@ from apps.users.models import User
 logger = logging.getLogger(__name__)
 
 
-def _get_free_plan() -> Plan | None:
-    """Return the active personal plan where every price is $0, or None."""
-    return (
-        Plan.objects.filter(is_active=True, context="personal", price__amount=0)
-        .select_related("price")
-        .first()
-    )
-
-
 def assign_free_plan(user: User) -> None:
     """Create a free Subscription for *user*.
 
     Idempotent: skips if the user already has any subscription.
     Does nothing if no free plan exists in the database.
     """
-    free_plan = _get_free_plan()
+    free_plan = Plan.free_plans().first()
     if free_plan is None:
         logger.warning("No free plan found; skipping free subscription for user %s", user.id)
         return
