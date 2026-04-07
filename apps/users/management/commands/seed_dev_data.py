@@ -244,15 +244,60 @@ PLANS = [
         "context": PlanContext.TEAM,
         "interval": PlanInterval.MONTH,
     },
+    {
+        "key": "personal_basic_yearly",
+        "name": "Personal Basic (Yearly)",
+        "description": (
+            "For power users. Advanced analytics, priority email support, and API access. "
+            "Billed annually — two months free."
+        ),
+        "context": PlanContext.PERSONAL,
+        "interval": PlanInterval.YEAR,
+    },
+    {
+        "key": "personal_pro_yearly",
+        "name": "Personal Pro (Yearly)",
+        "description": (
+            "Everything in Basic plus custom integrations, audit logs, and dedicated support. "
+            "Billed annually — two months free."
+        ),
+        "context": PlanContext.PERSONAL,
+        "interval": PlanInterval.YEAR,
+    },
+    {
+        "key": "team_basic_yearly",
+        "name": "Team Basic (Yearly)",
+        "description": (
+            "For small teams. Per-seat pricing, shared dashboards, and team analytics. "
+            "Billed annually — two months free."
+        ),
+        "context": PlanContext.TEAM,
+        "interval": PlanInterval.YEAR,
+    },
+    {
+        "key": "team_pro_yearly",
+        "name": "Team Pro (Yearly)",
+        "description": (
+            "For growing organizations. Per-seat pricing, SSO, audit logs, and dedicated support. "
+            "Billed annually — two months free."
+        ),
+        "context": PlanContext.TEAM,
+        "interval": PlanInterval.YEAR,
+    },
 ]
 
 # (plan_key, amount_usd_cents, stripe_price_id)
+# Yearly prices = monthly * 10 (two months free).
 PLAN_PRICES = [
     ("personal_free_monthly", 0, "price_dev_personal_free_usd"),
     ("personal_basic_monthly", 1900, "price_dev_personal_basic_usd"),
     ("personal_pro_monthly", 4900, "price_dev_personal_pro_usd"),
     ("team_basic_monthly", 1700, "price_dev_team_basic_usd"),
     ("team_pro_monthly", 4500, "price_dev_team_pro_usd"),
+    ("personal_basic_yearly", 19000, "price_dev_personal_basic_yearly_usd"),
+    ("personal_pro_yearly", 49000, "price_dev_personal_pro_yearly_usd"),
+    ("team_basic_yearly", 17000, "price_dev_team_basic_yearly_usd"),
+    ("team_pro_yearly", 45000, "price_dev_team_pro_yearly_usd"),
 ]
 
 
