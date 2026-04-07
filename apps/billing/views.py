@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, cast
 from uuid import UUID
 
 from asgiref.sync import async_to_sync
 from django.core.cache import cache
+from django.db.models import Q
 from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import serializers as drf_serializers
 from rest_framework import status
@@ -214,8 +215,6 @@ class SubscriptionView(APIView):
 
     @extend_schema(responses={200: SubscriptionSerializer, 404: None}, tags=["billing"])
     def get(self, request: Request) -> Response:
-        from django.db.models import Q
-
         user = get_user(request)
         customer_id = getattr(getattr(user, "stripe_customer", None), "id", None)
 
@@ -229,9 +228,9 @@ class SubscriptionView(APIView):
                 .filter(q, status__in=ACTIVE_SUBSCRIPTION_STATUSES)
                 .latest("created_at")
             )
-            return Response(SubscriptionSerializer(sub).data)
-        except SubscriptionModel.DoesNotExist:
-            return Response(status=status.HTTP_404_NOT_FOUND)
+        except SubscriptionModel.DoesNotExist as exc:
+            raise NotFound("No active subscription found.") from exc
+        return Response(SubscriptionSerializer(sub).data)
 
     @extend_schema(request=UpdateSubscriptionSerializer, responses={204: None}, tags=["billing"])
     def patch(self, request: Request) -> Response:
@@ -249,7 +248,8 @@ class SubscriptionView(APIView):
 
         async def _do() -> None:
             _, sub = await _get_customer_and_subscription(user.id)
-            stripe_sub_id: str = sub.stripe_id  # type: ignore[assignment]  # guaranteed non-None by _get_customer_and_subscription
+            # _get_customer_and_subscription rejects free subs, so stripe_id is always set.
+            stripe_sub_id = cast(str, sub.stripe_id)
             if plan_price:
                 await change_plan(
                     stripe_subscription_id=stripe_sub_id,
@@ -288,7 +288,7 @@ class ApplyPromoCodeView(APIView):
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "billing"
 
-    @extend_schema(request=PromoCodeSerializer, responses={200: None}, tags=["billing"])
+    @extend_schema(request=PromoCodeSerializer, responses={204: None}, tags=["billing"])
     def post(self, request: Request) -> Response:
         user = get_user(request)
         ser = PromoCodeSerializer(data=request.data)
@@ -296,11 +296,12 @@ class ApplyPromoCodeView(APIView):
 
         async def _do() -> None:
             _, sub = await _get_customer_and_subscription(user.id)
-            stripe_sub_id: str = sub.stripe_id  # type: ignore[assignment]  # guaranteed non-None by _get_customer_and_subscription
+            # _get_customer_and_subscription rejects free subs, so stripe_id is always set.
+            stripe_sub_id = cast(str, sub.stripe_id)
             await apply_promo_code(
                 stripe_subscription_id=stripe_sub_id,
                 promo_code=ser.validated_data["promo_code"],
             )
 
         async_to_sync(_do)()
-        return Response(status=status.HTTP_200_OK)
+        return Response(status=status.HTTP_204_NO_CONTENT)

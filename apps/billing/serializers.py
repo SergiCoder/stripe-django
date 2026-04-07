@@ -68,6 +68,8 @@ class ProductSerializer(serializers.ModelSerializer[Product]):
 
 
 class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
+    plan = PlanSerializer(read_only=True)
+
     class Meta:
         model = Subscription
         fields = (
