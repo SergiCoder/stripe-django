@@ -66,11 +66,12 @@ async def request_account_deletion(
     # Free-plan subscriptions have no Stripe record — treat as
     # "no subscription" so the account is deleted immediately.
     if active_sub and not active_sub.is_free:
-        # Cancel renewal, schedule deletion for period end
+        # Cancel renewal, schedule deletion for period end.
+        # 2025-03-31.basil: `cancel_at_period_end=True` → `cancel_at="min_period_end"`.
         await _stripe_request(
             stripe.Subscription.modify,
             active_sub.stripe_id,
-            cancel_at_period_end=True,
+            cancel_at="min_period_end",
         )
 
         scheduled_at = active_sub.current_period_end
@@ -155,13 +156,14 @@ async def cancel_account_deletion(
     if user.scheduled_deletion_at is None:
         return
 
-    # Re-enable subscription renewal (skip free subscriptions)
+    # Re-enable subscription renewal (skip free subscriptions).
+    # 2025-03-31.basil: clear a scheduled cancellation by passing `cancel_at=""`.
     active_sub = await subscription_repo.get_active_for_user(user_id)
     if active_sub and not active_sub.is_free:
         await _stripe_request(
             stripe.Subscription.modify,
             active_sub.stripe_id,
-            cancel_at_period_end=False,
+            cancel_at="",
         )
 
     await user_repo.cancel_scheduled_deletion(user_id)

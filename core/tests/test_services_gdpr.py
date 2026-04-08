@@ -119,7 +119,7 @@ async def test_request_deletion_with_active_subscription_schedules() -> None:
         )
 
     assert result == period_end
-    mock_modify.assert_called_once_with("sub_sched", cancel_at_period_end=True)
+    mock_modify.assert_called_once_with("sub_sched", cancel_at="min_period_end")
     # User still exists with scheduled_deletion_at set
     stored_user = await user_repo.get_by_id(user.id)
     assert stored_user is not None
@@ -381,7 +381,7 @@ async def test_cancel_deletion_clears_schedule_and_reactivates_subscription() ->
             subscription_repo=subscription_repo,
         )
 
-    mock_modify.assert_called_once_with("sub_reactivate", cancel_at_period_end=False)
+    mock_modify.assert_called_once_with("sub_reactivate", cancel_at="")
     stored_user = await user_repo.get_by_id(user.id)
     assert stored_user is not None
     assert stored_user.scheduled_deletion_at is None

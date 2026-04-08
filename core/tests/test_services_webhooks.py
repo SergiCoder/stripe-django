@@ -46,6 +46,7 @@ def _sub_event(
     stripe_customer_id: str = "cus_webhook",
     price_id: str = "price_webhook",
     discount: object = None,
+    discounts: list[object] | None = None,
     trial_end: int | None = None,
     canceled_at: int | None = None,
     quantity: int = 1,
@@ -71,6 +72,7 @@ def _sub_event(
                 "current_period_start": NOW_TS,
                 "current_period_end": NOW_TS + 86400,
                 "discount": discount,
+                "discounts": discounts,
                 "trial_end": trial_end,
                 "canceled_at": canceled_at,
             }
@@ -476,6 +478,49 @@ async def test_sync_subscription_with_discount_coupon_none() -> None:
     sub = next(iter(subscription_repo._store.values()))
     assert sub.promotion_code_id == "promo_xyz"
     assert sub.discount_percent is None
+    assert sub.discount_end_at is not None
+
+
+@pytest.mark.anyio
+async def test_sync_subscription_with_basil_discounts_array() -> None:
+    """Stripe API 2025-03-31.basil: ``discounts[]`` array replaces singular ``discount``."""
+    customer_repo = InMemoryStripeCustomerRepository()
+    plan_repo = InMemoryPlanRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_basil")
+    await customer_repo.save(customer)
+    plan = make_plan()
+    plan_repo._plans[plan.id] = plan
+    price = make_plan_price(plan_id=plan.id, stripe_price_id="price_basil")
+    plan_repo._prices[price.id] = price
+
+    discounts = [
+        {
+            "promotion_code": "promo_basil",
+            "coupon": {"percent_off": 15},
+            "end": NOW_TS + 86400,
+        }
+    ]
+
+    repos = _make_repos(
+        customer_repo=customer_repo,
+        plan_repo=plan_repo,
+        subscription_repo=subscription_repo,
+    )
+    event = _sub_event(
+        "customer.subscription.created",
+        stripe_customer_id="cus_basil",
+        price_id="price_basil",
+        discounts=discounts,
+    )
+
+    with patch("stripe.Webhook.construct_event", return_value=event):
+        await handle_stripe_event(b"payload", "sig", "secret", repos)
+
+    sub = next(iter(subscription_repo._store.values()))
+    assert sub.promotion_code_id == "promo_basil"
+    assert sub.discount_percent == 15.0
     assert sub.discount_end_at is not None
 
 

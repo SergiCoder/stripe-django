@@ -100,9 +100,24 @@ async def _dispatch(event: dict[str, Any], repos: WebhookRepos) -> None:
 
 
 def _extract_discount(sub_data: dict[str, Any]) -> tuple[str | None, float | None, datetime | None]:
-    """Extract promotion code, discount percent, and discount end from raw sub data."""
-    discount: Any = sub_data.get("discount")
-    if not discount:
+    """Extract promotion code, discount percent, and discount end from raw sub data.
+
+    Stripe API 2025-03-31.basil removes the singular ``subscription.discount``
+    field in favour of a ``discounts`` array (stackable discounts). We read the
+    first entry of ``discounts`` when present and fall back to the legacy
+    singular field for older fixtures / pre-Basil API versions.
+    """
+    discount: Any = None
+    discounts_list: Any = sub_data.get("discounts")
+    if discounts_list:
+        first = discounts_list[0]
+        # When expanded, entries are full Discount objects; otherwise they're
+        # plain IDs which carry no coupon info we can decode here.
+        if isinstance(first, dict):
+            discount = first
+    if discount is None:
+        discount = sub_data.get("discount")
+    if not discount or not isinstance(discount, dict):
         return None, None, None
 
     raw_promo = discount.get("promotion_code")
@@ -143,6 +158,16 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
     price_id = str(first_item["price"]["id"])
     stripe_sub_id = str(sub_data["id"])
 
+    # Stripe API 2024-06+ moved current_period_start/end from the subscription
+    # object to the subscription items. Read from the item first, fall back to
+    # the top-level for older API versions / fixtures.
+    period_start = first_item.get("current_period_start", sub_data.get("current_period_start"))
+    period_end = first_item.get("current_period_end", sub_data.get("current_period_end"))
+    if period_start is None or period_end is None:
+        raise WebhookDataError(
+            f"Subscription {stripe_sub_id} missing current_period_start/end"
+        )
+
     customer, plan_price, existing = await asyncio.gather(
         repos.customers.get_by_stripe_id(stripe_customer_str),
         repos.plans.get_price_by_stripe_id(price_id),
@@ -170,8 +195,8 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
         discount_percent=discount_percent,
         discount_end_at=discount_end_at,
         trial_ends_at=_ts_to_dt(sub_data.get("trial_end")),
-        current_period_start=_ts_to_dt_required(sub_data["current_period_start"]),
-        current_period_end=_ts_to_dt_required(sub_data["current_period_end"]),
+        current_period_start=_ts_to_dt_required(period_start),
+        current_period_end=_ts_to_dt_required(period_end),
         canceled_at=_ts_to_dt(sub_data.get("canceled_at")),
         created_at=existing.created_at if existing else datetime.now(UTC),
     )

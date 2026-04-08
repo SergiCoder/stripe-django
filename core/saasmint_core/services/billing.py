@@ -140,8 +140,11 @@ async def cancel_subscription(
         raise SubscriptionNotFoundError("No active subscription found to cancel.")
 
     if at_period_end:
+        # 2025-03-31.basil replaces `cancel_at_period_end=True` with
+        # `cancel_at="min_period_end"`. For single-item subs (the only shape
+        # we support) this is the direct equivalent.
         await asyncio.to_thread(
-            stripe.Subscription.modify, active.stripe_id, cancel_at_period_end=True
+            stripe.Subscription.modify, active.stripe_id, cancel_at="min_period_end"
         )
     else:
         await asyncio.to_thread(stripe.Subscription.cancel, active.stripe_id)

@@ -189,6 +189,7 @@ async def test_apply_promo_code_valid() -> None:
 
     with (
         patch("stripe.PromotionCode.list", return_value=mock_list),
+        patch("stripe.Subscription.retrieve", return_value={"discounts": []}),
         patch("stripe.Subscription.modify") as mock_modify,
     ):
         await apply_promo_code(stripe_subscription_id="sub_abc", promo_code="SAVE10")
@@ -196,6 +197,36 @@ async def test_apply_promo_code_valid() -> None:
     mock_modify.assert_called_once_with(
         "sub_abc",
         discounts=[{"promotion_code": "promo_xyz"}],
+    )
+
+
+@pytest.mark.anyio
+async def test_apply_promo_code_preserves_existing_discounts() -> None:
+    """A new promo stacks alongside the subscription's current discounts."""
+    mock_promo = MagicMock()
+    mock_promo.id = "promo_new"
+    mock_coupon = MagicMock()
+    mock_coupon.valid = True
+    mock_promo.coupon = mock_coupon
+    mock_list = MagicMock()
+    mock_list.data = [mock_promo]
+
+    existing_sub = {"discounts": [{"id": "di_existing"}, "di_str_id"]}
+
+    with (
+        patch("stripe.PromotionCode.list", return_value=mock_list),
+        patch("stripe.Subscription.retrieve", return_value=existing_sub),
+        patch("stripe.Subscription.modify") as mock_modify,
+    ):
+        await apply_promo_code(stripe_subscription_id="sub_abc", promo_code="SAVE10")
+
+    mock_modify.assert_called_once_with(
+        "sub_abc",
+        discounts=[
+            {"discount": "di_existing"},
+            {"discount": "di_str_id"},
+            {"promotion_code": "promo_new"},
+        ],
     )
 
 
