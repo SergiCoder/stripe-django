@@ -13,6 +13,7 @@ from saasmint_core.services.billing import (
     create_billing_portal_session,
     create_checkout_session,
     get_or_create_customer,
+    resume_subscription,
 )
 from tests.conftest import (
     InMemoryStripeCustomerRepository,
@@ -341,6 +342,51 @@ async def test_cancel_subscription_free_sub_raises() -> None:
 
     with pytest.raises(SubscriptionNotFoundError):
         await cancel_subscription(
+            stripe_customer_id=customer_id,
+            subscription_repo=repo,
+        )
+
+
+# ── resume_subscription ───────────────────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_resume_subscription_clears_cancel_at() -> None:
+    repo = InMemorySubscriptionRepository()
+    customer_id = uuid4()
+    sub = make_subscription(stripe_customer_id=customer_id, stripe_id="sub_resume")
+    await repo.save(sub)
+
+    with patch("stripe.Subscription.modify") as mock_modify:
+        await resume_subscription(
+            stripe_customer_id=customer_id,
+            subscription_repo=repo,
+        )
+
+    mock_modify.assert_called_once_with("sub_resume", cancel_at_period_end=False)
+
+
+@pytest.mark.anyio
+async def test_resume_subscription_no_active_raises() -> None:
+    repo = InMemorySubscriptionRepository()  # empty
+
+    with pytest.raises(SubscriptionNotFoundError):
+        await resume_subscription(
+            stripe_customer_id=uuid4(),
+            subscription_repo=repo,
+        )
+
+
+@pytest.mark.anyio
+async def test_resume_subscription_free_sub_raises() -> None:
+    """A free-plan subscription has no stripe_id and cannot be resumed via Stripe."""
+    repo = InMemorySubscriptionRepository()
+    customer_id = uuid4()
+    free_sub = make_subscription(stripe_customer_id=customer_id, stripe_id=None, user_id=uuid4())
+    await repo.save(free_sub)
+
+    with pytest.raises(SubscriptionNotFoundError):
+        await resume_subscription(
             stripe_customer_id=customer_id,
             subscription_repo=repo,
         )

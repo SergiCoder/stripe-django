@@ -134,11 +134,24 @@ class UpdateSubscriptionSerializer(serializers.Serializer[object]):
     plan_price_id = serializers.UUIDField(required=False)
     prorate = serializers.BooleanField(default=True)
     quantity = serializers.IntegerField(min_value=1, max_value=10000, required=False)
+    cancel_at_period_end = serializers.BooleanField(required=False)
 
     def validate(self, attrs: dict[str, object]) -> dict[str, object]:
-        if "plan_price_id" not in attrs and "quantity" not in attrs:
+        has_plan_change = "plan_price_id" in attrs or "quantity" in attrs
+        has_cancel_toggle = "cancel_at_period_end" in attrs
+
+        if not has_plan_change and not has_cancel_toggle:
             raise serializers.ValidationError(
-                "At least one of 'plan_price_id' or 'quantity' is required."
+                "At least one of 'plan_price_id', 'quantity', or "
+                "'cancel_at_period_end' is required."
+            )
+        # Cancel/resume is a standalone toggle — mixing it with plan/seat
+        # changes makes the intent ambiguous (e.g. upgrade-then-cancel).
+        # Clients should send two requests instead.
+        if has_cancel_toggle and has_plan_change:
+            raise serializers.ValidationError(
+                "'cancel_at_period_end' cannot be combined with 'plan_price_id' "
+                "or 'quantity'."
             )
         return attrs
 

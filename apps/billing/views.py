@@ -24,6 +24,7 @@ from saasmint_core.services.billing import (
     create_billing_portal_session,
     create_checkout_session,
     get_or_create_customer,
+    resume_subscription,
 )
 from saasmint_core.services.subscriptions import (
     apply_promo_code,
@@ -247,10 +248,22 @@ class SubscriptionView(APIView):
             _validate_quantity_for_plan(plan_price, data["quantity"])
 
         async def _do() -> None:
-            _, sub = await _get_customer_and_subscription(user.id)
+            customer, sub = await _get_customer_and_subscription(user.id)
             # _get_customer_and_subscription rejects free subs, so stripe_id is always set.
             stripe_sub_id = cast(str, sub.stripe_id)
-            if plan_price:
+            if "cancel_at_period_end" in data:
+                if data["cancel_at_period_end"]:
+                    await cancel_subscription(
+                        stripe_customer_id=customer.id,
+                        at_period_end=True,
+                        subscription_repo=_subscription_repo,
+                    )
+                else:
+                    await resume_subscription(
+                        stripe_customer_id=customer.id,
+                        subscription_repo=_subscription_repo,
+                    )
+            elif plan_price:
                 await change_plan(
                     stripe_subscription_id=stripe_sub_id,
                     new_stripe_price_id=plan_price.stripe_price_id,

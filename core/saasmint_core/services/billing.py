@@ -148,3 +148,29 @@ async def cancel_subscription(
         )
     else:
         await asyncio.to_thread(stripe.Subscription.cancel, active.stripe_id)
+
+
+async def resume_subscription(
+    *,
+    stripe_customer_id: UUID,
+    subscription_repo: SubscriptionRepository,
+) -> None:
+    """
+    Clear a scheduled cancellation on the active subscription, keeping it open.
+
+    Resumes a sub that was previously canceled with at_period_end=True (i.e.
+    flagged with `cancel_at`). The sub must still be active — once it has
+    fully ended, the customer must start a new checkout. DB state is synced
+    via the customer.subscription.updated webhook.
+    """
+    active = await subscription_repo.get_active_for_customer(stripe_customer_id)
+    if active is None or active.stripe_id is None:
+        raise SubscriptionNotFoundError("No active subscription found to resume.")
+
+    # Stripe's documented "Stop a pending cancellation" call. This clears any
+    # scheduled cancel — including one set via cancel_at="min_period_end" in
+    # the 2025-03-31.basil API — and is the only resume path that passes
+    # both the basil typed-dicts and mypy.
+    await asyncio.to_thread(
+        stripe.Subscription.modify, active.stripe_id, cancel_at_period_end=False
+    )

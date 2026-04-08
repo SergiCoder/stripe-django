@@ -419,6 +419,64 @@ class TestUpdateSubscription:
         )
         assert mock_change.call_args.kwargs["prorate"] is False
 
+    @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
+    def test_cancel_at_period_end_true_calls_cancel(
+        self, mock_cancel, authed_client, subscription
+    ):
+        resp = authed_client.patch(
+            "/api/v1/billing/subscription/",
+            {"cancel_at_period_end": True},
+            format="json",
+        )
+        assert resp.status_code == 204
+        mock_cancel.assert_called_once()
+        assert mock_cancel.call_args.kwargs["at_period_end"] is True
+
+    @patch("apps.billing.views.resume_subscription", new_callable=AsyncMock)
+    def test_cancel_at_period_end_false_calls_resume(
+        self, mock_resume, authed_client, subscription
+    ):
+        resp = authed_client.patch(
+            "/api/v1/billing/subscription/",
+            {"cancel_at_period_end": False},
+            format="json",
+        )
+        assert resp.status_code == 204
+        mock_resume.assert_called_once()
+
+    @patch("apps.billing.views.resume_subscription", new_callable=AsyncMock)
+    @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
+    def test_cancel_toggle_does_not_call_change_plan(
+        self, mock_cancel, mock_resume, authed_client, subscription
+    ):
+        with patch("apps.billing.views.change_plan", new_callable=AsyncMock) as mock_change:
+            authed_client.patch(
+                "/api/v1/billing/subscription/",
+                {"cancel_at_period_end": True},
+                format="json",
+            )
+            mock_change.assert_not_called()
+
+    def test_cancel_at_period_end_with_plan_returns_400(
+        self, authed_client, subscription, plan_price
+    ):
+        resp = authed_client.patch(
+            "/api/v1/billing/subscription/",
+            {"plan_price_id": str(plan_price.id), "cancel_at_period_end": True},
+            format="json",
+        )
+        assert resp.status_code == 400
+
+    def test_cancel_at_period_end_free_subscription_returns_404(
+        self, authed_client, free_subscription
+    ):
+        resp = authed_client.patch(
+            "/api/v1/billing/subscription/",
+            {"cancel_at_period_end": False},
+            format="json",
+        )
+        assert resp.status_code == 404
+
     def test_unauthenticated_rejected(self):
         client = APIClient()
         resp = client.patch("/api/v1/billing/subscription/", {"quantity": 5}, format="json")

@@ -253,6 +253,28 @@ class TestUpdateSubscriptionSerializer:
         ser = UpdateSubscriptionSerializer(data={"prorate": True})
         assert not ser.is_valid()
 
+    def test_cancel_at_period_end_true_alone_valid(self):
+        ser = UpdateSubscriptionSerializer(data={"cancel_at_period_end": True})
+        assert ser.is_valid(), ser.errors
+        assert ser.validated_data["cancel_at_period_end"] is True
+
+    def test_cancel_at_period_end_false_alone_valid(self):
+        ser = UpdateSubscriptionSerializer(data={"cancel_at_period_end": False})
+        assert ser.is_valid(), ser.errors
+        assert ser.validated_data["cancel_at_period_end"] is False
+
+    def test_cancel_at_period_end_with_plan_change_rejected(self):
+        ser = UpdateSubscriptionSerializer(
+            data={"plan_price_id": _PLAN_PRICE_UUID, "cancel_at_period_end": True}
+        )
+        assert not ser.is_valid()
+
+    def test_cancel_at_period_end_with_quantity_rejected(self):
+        ser = UpdateSubscriptionSerializer(
+            data={"quantity": 3, "cancel_at_period_end": False}
+        )
+        assert not ser.is_valid()
+
     def test_both_fields_preserves_values(self):
         ser = UpdateSubscriptionSerializer(
             data={"plan_price_id": _PLAN_PRICE_UUID, "quantity": 3, "prorate": False}
