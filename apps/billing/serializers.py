@@ -14,11 +14,18 @@ def _validate_redirect_url(url: str) -> str:
     """Ensure a redirect URL belongs to an allowed domain."""
     allowed_origins: list[str] = getattr(settings, "CORS_ALLOWED_ORIGINS", [])
     allowed_hosts: list[str] = getattr(settings, "ALLOWED_HOSTS", [])
+    cors_allow_all: bool = getattr(settings, "CORS_ALLOW_ALL_ORIGINS", False)
 
     parsed = urlparse(url)
 
     if parsed.scheme not in ("http", "https"):
         raise serializers.ValidationError("Only HTTP(S) redirect URLs are allowed.")
+
+    # Dev convenience: when CORS is wide open, accept any HTTP(S) origin so
+    # local frontends (mkcert localhost, docker network hosts, etc.) work
+    # without an explicit allowlist. Prod never enables this flag.
+    if cors_allow_all:
+        return url
 
     origin = f"{parsed.scheme}://{parsed.netloc}"
     hostname = parsed.hostname or ""

@@ -82,6 +82,7 @@ class TestCheckoutRequestSerializer:
         assert "cancel_url" in ser.errors
 
     def test_invalid_redirect_url_rejected(self, settings):
+        settings.CORS_ALLOW_ALL_ORIGINS = False
         settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
         settings.ALLOWED_HOSTS = ["example.com"]
         ser = CheckoutRequestSerializer(
@@ -143,6 +144,7 @@ class TestCheckoutRequestSerializer:
         assert ser.validated_data["promo_code"] is None
 
     def test_allowed_host_wildcard_excluded(self, settings):
+        settings.CORS_ALLOW_ALL_ORIGINS = False
         settings.CORS_ALLOWED_ORIGINS = []
         settings.ALLOWED_HOSTS = ["*"]
         ser = CheckoutRequestSerializer(
@@ -191,6 +193,7 @@ class TestPortalRequestSerializer:
         assert "return_url" in ser.errors
 
     def test_invalid_domain_rejected(self, settings):
+        settings.CORS_ALLOW_ALL_ORIGINS = False
         settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
         settings.ALLOWED_HOSTS = ["example.com"]
         ser = PortalRequestSerializer(data={"return_url": "https://evil.com/portal"})
