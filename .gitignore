@@ -39,3 +39,4 @@ infra/certs/
 # OS
 .DS_Store
 Thumbs.db
+openapi.yaml

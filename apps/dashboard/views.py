@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from django.conf import settings
@@ -10,7 +11,11 @@ from django.urls import reverse
 from django.views.generic import TemplateView
 from hijack.views import AcquireUserView, ReleaseUserView
 
-from apps.billing.repositories import DjangoPlanRepository, DjangoSubscriptionRepository
+from apps.billing.repositories import (
+    DjangoPlanRepository,
+    DjangoProductRepository,
+    DjangoSubscriptionRepository,
+)
 from apps.orgs.models import OrgMember
 
 if TYPE_CHECKING:
@@ -44,16 +49,22 @@ class DashboardView(TemplateView):
         user = await request.auser()
         if not user.is_authenticated:
             return HttpResponseRedirect(f"{settings.LOGIN_URL}?next={request.path}")
-        subscription = await DjangoSubscriptionRepository().get_active_for_user(user.id)
-        plan = (
-            await DjangoPlanRepository().get_by_id(subscription.plan_id)
-            if subscription is not None
-            else None
+        plan_repo = DjangoPlanRepository()
+        # Independent fetches — run concurrently to cut round-trip latency.
+        subscription, plans, products, org_memberships = await asyncio.gather(
+            DjangoSubscriptionRepository().get_active_for_user(user.id),
+            plan_repo.list_active(),
+            DjangoProductRepository().list_active(),
+            _get_org_memberships(user),
         )
-        org_memberships = await _get_org_memberships(user)
+        plan = (
+            await plan_repo.get_by_id(subscription.plan_id) if subscription is not None else None
+        )
         ctx = self.get_context_data(
             subscription=subscription,
             plan=plan,
+            plans=plans,
+            products=products,
             org_memberships=org_memberships,
             **kwargs,
         )

@@ -2,17 +2,26 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 import pytest
 
+from apps.billing.models import Product, ProductPrice
 from apps.billing.serializers import (
     CheckoutRequestSerializer,
     PlanPriceSerializer,
     PlanSerializer,
     PortalRequestSerializer,
+    ProductPriceSerializer,
+    ProductSerializer,
     PromoCodeSerializer,
     SubscriptionSerializer,
     UpdateSubscriptionSerializer,
 )
+
+# Sample valid UUID for serializer-level tests that don't need a real DB row.
+# UUIDField only validates format, not existence.
+_PLAN_PRICE_UUID = "11111111-1111-1111-1111-111111111111"
 
 
 @pytest.mark.django_db
@@ -20,7 +29,6 @@ class TestPlanPriceSerializer:
     def test_serializes_fields(self, plan_price):
         data = PlanPriceSerializer(plan_price).data
         assert data["id"] == str(plan_price.id)
-        assert data["currency"] == "usd"
         assert data["amount"] == 999
 
     def test_all_fields_read_only(self):
@@ -31,13 +39,13 @@ class TestPlanPriceSerializer:
 
 @pytest.mark.django_db
 class TestPlanSerializer:
-    def test_serializes_with_prices(self, plan, plan_price):
+    def test_serializes_with_price(self, plan, plan_price):
         data = PlanSerializer(plan).data
         assert data["name"] == "Personal Monthly"
         assert data["context"] == "personal"
+        assert data["tier"] == "basic"
         assert data["interval"] == "month"
-        assert len(data["prices"]) == 1
-        assert data["prices"][0]["currency"] == "usd"
+        assert data["price"]["amount"] == 999
 
     def test_all_fields_read_only(self):
         assert set(PlanSerializer.Meta.read_only_fields) == set(PlanSerializer.Meta.fields)
@@ -59,7 +67,7 @@ class TestCheckoutRequestSerializer:
         settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
         ser = CheckoutRequestSerializer(
             data={
-                "plan_price_id": "price_123",
+                "plan_price_id": _PLAN_PRICE_UUID,
                 "success_url": "https://example.com/success",
                 "cancel_url": "https://example.com/cancel",
             }
@@ -74,11 +82,12 @@ class TestCheckoutRequestSerializer:
         assert "cancel_url" in ser.errors
 
     def test_invalid_redirect_url_rejected(self, settings):
+        settings.CORS_ALLOW_ALL_ORIGINS = False
         settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
         settings.ALLOWED_HOSTS = ["example.com"]
         ser = CheckoutRequestSerializer(
             data={
-                "plan_price_id": "price_123",
+                "plan_price_id": _PLAN_PRICE_UUID,
                 "success_url": "https://evil.com/phish",
                 "cancel_url": "https://example.com/cancel",
             }
@@ -90,7 +99,7 @@ class TestCheckoutRequestSerializer:
         settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
         ser = CheckoutRequestSerializer(
             data={
-                "plan_price_id": "price_123",
+                "plan_price_id": _PLAN_PRICE_UUID,
                 "success_url": "javascript://example.com/xss",
                 "cancel_url": "https://example.com/cancel",
             }
@@ -101,7 +110,7 @@ class TestCheckoutRequestSerializer:
         settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
         ser = CheckoutRequestSerializer(
             data={
-                "plan_price_id": "price_123",
+                "plan_price_id": _PLAN_PRICE_UUID,
                 "success_url": "https://example.com/success",
                 "cancel_url": "https://example.com/cancel",
             }
@@ -113,7 +122,7 @@ class TestCheckoutRequestSerializer:
         settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
         ser = CheckoutRequestSerializer(
             data={
-                "plan_price_id": "price_123",
+                "plan_price_id": _PLAN_PRICE_UUID,
                 "quantity": 0,
                 "success_url": "https://example.com/success",
                 "cancel_url": "https://example.com/cancel",
@@ -126,7 +135,7 @@ class TestCheckoutRequestSerializer:
         settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
         ser = CheckoutRequestSerializer(
             data={
-                "plan_price_id": "price_123",
+                "plan_price_id": _PLAN_PRICE_UUID,
                 "success_url": "https://example.com/success",
                 "cancel_url": "https://example.com/cancel",
             }
@@ -135,11 +144,12 @@ class TestCheckoutRequestSerializer:
         assert ser.validated_data["promo_code"] is None
 
     def test_allowed_host_wildcard_excluded(self, settings):
+        settings.CORS_ALLOW_ALL_ORIGINS = False
         settings.CORS_ALLOWED_ORIGINS = []
         settings.ALLOWED_HOSTS = ["*"]
         ser = CheckoutRequestSerializer(
             data={
-                "plan_price_id": "price_123",
+                "plan_price_id": _PLAN_PRICE_UUID,
                 "success_url": "https://evil.com/phish",
                 "cancel_url": "https://evil.com/cancel",
             }
@@ -151,12 +161,24 @@ class TestCheckoutRequestSerializer:
         settings.ALLOWED_HOSTS = [".example.com"]
         ser = CheckoutRequestSerializer(
             data={
-                "plan_price_id": "price_123",
+                "plan_price_id": _PLAN_PRICE_UUID,
                 "success_url": "https://app.example.com/success",
                 "cancel_url": "https://app.example.com/cancel",
             }
         )
         assert ser.is_valid(), ser.errors
+
+    def test_malformed_plan_price_id_rejected(self, settings):
+        settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
+        ser = CheckoutRequestSerializer(
+            data={
+                "plan_price_id": "not-a-uuid",
+                "success_url": "https://example.com/success",
+                "cancel_url": "https://example.com/cancel",
+            }
+        )
+        assert not ser.is_valid()
+        assert "plan_price_id" in ser.errors
 
 
 class TestPortalRequestSerializer:
@@ -171,6 +193,7 @@ class TestPortalRequestSerializer:
         assert "return_url" in ser.errors
 
     def test_invalid_domain_rejected(self, settings):
+        settings.CORS_ALLOW_ALL_ORIGINS = False
         settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
         settings.ALLOWED_HOSTS = ["example.com"]
         ser = PortalRequestSerializer(data={"return_url": "https://evil.com/portal"})
@@ -179,12 +202,14 @@ class TestPortalRequestSerializer:
 
 class TestUpdateSubscriptionSerializer:
     def test_valid_plan_change(self):
-        ser = UpdateSubscriptionSerializer(data={"plan_price_id": "price_new"})
+        ser = UpdateSubscriptionSerializer(data={"plan_price_id": _PLAN_PRICE_UUID})
         assert ser.is_valid(), ser.errors
         assert ser.validated_data["prorate"] is True
 
     def test_prorate_false(self):
-        ser = UpdateSubscriptionSerializer(data={"plan_price_id": "price_new", "prorate": False})
+        ser = UpdateSubscriptionSerializer(
+            data={"plan_price_id": _PLAN_PRICE_UUID, "prorate": False}
+        )
         assert ser.is_valid(), ser.errors
         assert ser.validated_data["prorate"] is False
 
@@ -193,7 +218,7 @@ class TestUpdateSubscriptionSerializer:
         assert ser.is_valid(), ser.errors
 
     def test_both_fields(self):
-        ser = UpdateSubscriptionSerializer(data={"plan_price_id": "price_new", "quantity": 5})
+        ser = UpdateSubscriptionSerializer(data={"plan_price_id": _PLAN_PRICE_UUID, "quantity": 5})
         assert ser.is_valid(), ser.errors
 
     def test_empty_body_rejected(self):
@@ -228,12 +253,33 @@ class TestUpdateSubscriptionSerializer:
         ser = UpdateSubscriptionSerializer(data={"prorate": True})
         assert not ser.is_valid()
 
+    def test_cancel_at_period_end_true_alone_valid(self):
+        ser = UpdateSubscriptionSerializer(data={"cancel_at_period_end": True})
+        assert ser.is_valid(), ser.errors
+        assert ser.validated_data["cancel_at_period_end"] is True
+
+    def test_cancel_at_period_end_false_alone_valid(self):
+        ser = UpdateSubscriptionSerializer(data={"cancel_at_period_end": False})
+        assert ser.is_valid(), ser.errors
+        assert ser.validated_data["cancel_at_period_end"] is False
+
+    def test_cancel_at_period_end_with_plan_change_rejected(self):
+        ser = UpdateSubscriptionSerializer(
+            data={"plan_price_id": _PLAN_PRICE_UUID, "cancel_at_period_end": True}
+        )
+        assert not ser.is_valid()
+
+    def test_cancel_at_period_end_with_quantity_rejected(self):
+        ser = UpdateSubscriptionSerializer(data={"quantity": 3, "cancel_at_period_end": False})
+        assert not ser.is_valid()
+
     def test_both_fields_preserves_values(self):
         ser = UpdateSubscriptionSerializer(
-            data={"plan_price_id": "price_new", "quantity": 3, "prorate": False}
+            data={"plan_price_id": _PLAN_PRICE_UUID, "quantity": 3, "prorate": False}
         )
         assert ser.is_valid(), ser.errors
-        assert ser.validated_data["plan_price_id"] == "price_new"
+        # UUIDField parses the string into a uuid.UUID instance
+        assert ser.validated_data["plan_price_id"] == UUID(_PLAN_PRICE_UUID)
         assert ser.validated_data["quantity"] == 3
         assert ser.validated_data["prorate"] is False
 
@@ -246,3 +292,40 @@ class TestPromoCodeSerializer:
     def test_missing(self):
         ser = PromoCodeSerializer(data={})
         assert not ser.is_valid()
+
+
+@pytest.mark.django_db
+class TestProductPriceSerializer:
+    def test_serializes_fields(self):
+        product = Product.objects.create(
+            name="100 Credits", type="one_time", credits=100, is_active=True
+        )
+        price = ProductPrice.objects.create(
+            product=product, stripe_price_id="price_pp_1", amount=999
+        )
+        data = ProductPriceSerializer(price).data
+        assert data["id"] == str(price.id)
+        assert data["amount"] == 999
+
+    def test_all_fields_read_only(self):
+        assert set(ProductPriceSerializer.Meta.read_only_fields) == set(
+            ProductPriceSerializer.Meta.fields
+        )
+
+
+@pytest.mark.django_db
+class TestProductSerializer:
+    def test_serializes_with_price(self):
+        product = Product.objects.create(
+            name="500 Credits", type="one_time", credits=500, is_active=True
+        )
+        ProductPrice.objects.create(product=product, stripe_price_id="price_pp_2", amount=4999)
+        data = ProductSerializer(product).data
+        assert data["name"] == "500 Credits"
+        assert data["type"] == "one_time"
+        assert data["credits"] == 500
+        assert data["is_active"] is True
+        assert data["price"]["amount"] == 4999
+
+    def test_all_fields_read_only(self):
+        assert set(ProductSerializer.Meta.read_only_fields) == set(ProductSerializer.Meta.fields)

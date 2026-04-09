@@ -12,7 +12,11 @@ from uuid import uuid4
 import stripe
 
 from saasmint_core.domain.stripe_event import StripeEvent
-from saasmint_core.domain.subscription import Subscription, SubscriptionStatus
+from saasmint_core.domain.subscription import (
+    FREE_SUBSCRIPTION_PERIOD_END,
+    Subscription,
+    SubscriptionStatus,
+)
 from saasmint_core.repositories.customer import StripeCustomerRepository
 from saasmint_core.repositories.plan import PlanRepository
 from saasmint_core.repositories.stripe_event import StripeEventRepository
@@ -44,10 +48,18 @@ async def handle_stripe_event(
     from saasmint_core.exceptions import WebhookVerificationError
 
     try:
-        event = stripe.Webhook.construct_event(payload, signature, webhook_secret)  # type: ignore[no-untyped-call]  # Stripe stub missing return type annotation
+        stripe_event = stripe.Webhook.construct_event(payload, signature, webhook_secret)  # type: ignore[no-untyped-call]  # Stripe stub missing return type annotation
     except stripe.SignatureVerificationError as exc:
         raise WebhookVerificationError("Invalid Stripe webhook signature") from exc
 
+    # Convert StripeObject → plain nested dict at the boundary. Newer
+    # stripe-python versions don't inherit StripeObject from dict, so it
+    # has no `.get()` and `dict(event)` raises KeyError. `.to_dict()`
+    # recurses into nested StripeObjects. Tests stub construct_event to
+    # return a plain dict directly, so accept that case as-is.
+    event: dict[str, Any] = (
+        stripe_event.to_dict() if hasattr(stripe_event, "to_dict") else stripe_event
+    )
     stripe_id: str = event["id"]
 
     is_new = await repos.events.save_if_new(
@@ -56,7 +68,7 @@ async def handle_stripe_event(
             stripe_id=stripe_id,
             type=event["type"],
             livemode=event["livemode"],
-            payload=dict(event),
+            payload=event,
             created_at=datetime.now(UTC),
         )
     )
@@ -73,7 +85,7 @@ async def handle_stripe_event(
         raise
 
 
-async def _dispatch(event: stripe.Event, repos: WebhookRepos) -> None:
+async def _dispatch(event: dict[str, Any], repos: WebhookRepos) -> None:
     match event["type"]:
         case "customer.subscription.created" | "customer.subscription.updated":
             await _sync_subscription(event["data"]["object"], repos)
@@ -88,9 +100,24 @@ async def _dispatch(event: stripe.Event, repos: WebhookRepos) -> None:
 
 
 def _extract_discount(sub_data: dict[str, Any]) -> tuple[str | None, float | None, datetime | None]:
-    """Extract promotion code, discount percent, and discount end from raw sub data."""
-    discount: Any = sub_data.get("discount")
-    if not discount:
+    """Extract promotion code, discount percent, and discount end from raw sub data.
+
+    Stripe API 2025-03-31.basil removes the singular ``subscription.discount``
+    field in favour of a ``discounts`` array (stackable discounts). We read the
+    first entry of ``discounts`` when present and fall back to the legacy
+    singular field for older fixtures / pre-Basil API versions.
+    """
+    discount: Any = None
+    discounts_list: Any = sub_data.get("discounts")
+    if discounts_list:
+        first = discounts_list[0]
+        # When expanded, entries are full Discount objects; otherwise they're
+        # plain IDs which carry no coupon info we can decode here.
+        if isinstance(first, dict):
+            discount = first
+    if discount is None:
+        discount = sub_data.get("discount")
+    if not discount or not isinstance(discount, dict):
         return None, None, None
 
     raw_promo = discount.get("promotion_code")
@@ -131,6 +158,14 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
     price_id = str(first_item["price"]["id"])
     stripe_sub_id = str(sub_data["id"])
 
+    # Stripe API 2024-06+ moved current_period_start/end from the subscription
+    # object to the subscription items. Read from the item first, fall back to
+    # the top-level for older API versions / fixtures.
+    period_start = first_item.get("current_period_start", sub_data.get("current_period_start"))
+    period_end = first_item.get("current_period_end", sub_data.get("current_period_end"))
+    if period_start is None or period_end is None:
+        raise WebhookDataError(f"Subscription {stripe_sub_id} missing current_period_start/end")
+
     customer, plan_price, existing = await asyncio.gather(
         repos.customers.get_by_stripe_id(stripe_customer_str),
         repos.plans.get_price_by_stripe_id(price_id),
@@ -150,6 +185,7 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
         id=existing.id if existing else uuid4(),
         stripe_id=stripe_sub_id,
         stripe_customer_id=customer.id,
+        user_id=customer.user_id,  # None for org subs; mirrored so user-scoped queries work
         status=SubscriptionStatus(str(sub_data["status"])),
         plan_id=plan_price.plan_id,
         quantity=int(first_item.get("quantity") or 1),
@@ -157,30 +193,72 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
         discount_percent=discount_percent,
         discount_end_at=discount_end_at,
         trial_ends_at=_ts_to_dt(sub_data.get("trial_end")),
-        current_period_start=_ts_to_dt_required(sub_data["current_period_start"]),
-        current_period_end=_ts_to_dt_required(sub_data["current_period_end"]),
+        current_period_start=_ts_to_dt_required(period_start),
+        current_period_end=_ts_to_dt_required(period_end),
         canceled_at=_ts_to_dt(sub_data.get("canceled_at")),
         created_at=existing.created_at if existing else datetime.now(UTC),
     )
 
     await repos.subscriptions.save(subscription)
 
+    # Prune the placeholder free subscription for personal users whenever they
+    # have a paid sub synced. Runs on every created/updated event (not just the
+    # first) so that retries after a crash between save() and cleanup still
+    # converge — delete_free_for_user is a filtered DELETE and idempotent.
+    if customer.user_id is not None and not subscription.is_free:
+        deleted = await repos.subscriptions.delete_free_for_user(customer.user_id)
+        if deleted:
+            logger.info(
+                "Removed %d free subscription(s) for user %s after sync of %s",
+                deleted,
+                customer.user_id,
+                stripe_sub_id,
+            )
+
 
 async def _on_subscription_deleted(sub_data: dict[str, Any], repos: WebhookRepos) -> None:
-    """Mark a subscription as canceled when Stripe hard-deletes it."""
+    """Mark a subscription as canceled and auto-fallback personal users to free."""
     stripe_sub_id = str(sub_data["id"])
     existing = await repos.subscriptions.get_by_stripe_id(stripe_sub_id)
     if existing is None:
         logger.warning("Received deletion event for unknown subscription %s", stripe_sub_id)
         return
 
+    now = datetime.now(UTC)
     canceled = existing.model_copy(
-        update={
-            "status": SubscriptionStatus.CANCELED,
-            "canceled_at": datetime.now(UTC),
-        }
+        update={"status": SubscriptionStatus.CANCELED, "canceled_at": now}
     )
     await repos.subscriptions.save(canceled)
+
+    # Auto-fallback: personal users land back on the free plan so they keep
+    # using the product with free-tier limits. Org subs are skipped — there's
+    # no team-level free plan.
+    if existing.user_id is None:
+        return
+
+    free_plan = await repos.plans.get_free_plan()
+    if free_plan is None:
+        logger.warning(
+            "No free plan found; user %s has no active subscription after %s cancellation",
+            existing.user_id,
+            stripe_sub_id,
+        )
+        return
+
+    await repos.subscriptions.save(
+        Subscription(
+            id=uuid4(),
+            stripe_id=None,
+            stripe_customer_id=None,
+            user_id=existing.user_id,
+            status=SubscriptionStatus.ACTIVE,
+            plan_id=free_plan.id,
+            quantity=1,
+            current_period_start=now,
+            current_period_end=FREE_SUBSCRIPTION_PERIOD_END,
+            created_at=now,
+        )
+    )
 
 
 async def _on_invoice_paid(invoice_data: dict[str, Any]) -> None:

@@ -176,6 +176,28 @@ class TestUserAdminExtendedQueryset:
         annotated = qs.get(pk=user.pk)
         assert getattr(annotated, "_subscription_status", None) is None
 
+    def test_user_with_free_subscription_annotated(self, db, admin_instance):
+        """Free subs have null stripe_customer but a direct user FK; must still annotate."""
+        mock_request = MagicMock()
+        user = _make_user(db, "free@example.com", "sup_free")
+        plan = Plan.objects.create(
+            name="Personal Free", context="personal", interval="month", is_active=True
+        )
+        Subscription.objects.create(
+            stripe_id=None,
+            stripe_customer=None,
+            user=user,
+            status="active",
+            plan=plan,
+            quantity=1,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(9999, 12, 31, tzinfo=UTC),
+        )
+
+        qs = admin_instance.get_queryset(mock_request)
+        annotated = qs.get(pk=user.pk)
+        assert annotated._subscription_status == "active"
+
     def test_most_recent_active_subscription_status_used(self, db, admin_instance):
         mock_request = MagicMock()
         user = _make_user(db, "multi@example.com", "sup_multi")
@@ -248,8 +270,13 @@ class TestUserAdminChangelistRendering:
 class TestUserAdminExtendedInheritance:
     """Verify UserAdminExtended inherits configuration from apps.users.admin.UserAdmin."""
 
-    def test_inherits_list_filter(self, admin_instance, base_admin):
-        assert admin_instance.list_filter == base_admin.list_filter
+    def test_extends_list_filter_with_deletion_state(self, admin_instance, base_admin):
+        from apps.admin_panel.admin import DeletionStateFilter
+
+        # Extended admin keeps every base filter and prepends DeletionStateFilter
+        assert DeletionStateFilter in admin_instance.list_filter
+        for base_filter in base_admin.list_filter:
+            assert base_filter in admin_instance.list_filter
 
     def test_inherits_search_fields(self, admin_instance, base_admin):
         assert admin_instance.search_fields == base_admin.search_fields

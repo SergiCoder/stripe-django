@@ -7,13 +7,17 @@ from __future__ import annotations
 
 import pytest
 from saasmint_core.domain.org import OrgRole as CoreOrgRole
+from saasmint_core.domain.product import ProductType as CoreProductType
 from saasmint_core.domain.subscription import PlanContext as CorePlanContext
 from saasmint_core.domain.subscription import PlanInterval as CorePlanInterval
+from saasmint_core.domain.subscription import PlanTier as CorePlanTier
 from saasmint_core.domain.subscription import SubscriptionStatus as CoreSubscriptionStatus
 from saasmint_core.domain.user import AccountType as CoreAccountType
 
 from apps.billing.models import PlanContext as DjPlanContext
 from apps.billing.models import PlanInterval as DjPlanInterval
+from apps.billing.models import PlanTier as DjPlanTier
+from apps.billing.models import ProductType as DjProductType
 from apps.billing.models import SubscriptionStatus as DjSubscriptionStatus
 from apps.orgs.models import OrgRole as DjOrgRole
 from apps.users.models import AccountType as DjAccountType
@@ -23,6 +27,8 @@ _ENUM_PAIRS: list[tuple[type, type, str]] = [
     (DjSubscriptionStatus, CoreSubscriptionStatus, "SubscriptionStatus"),
     (DjPlanInterval, CorePlanInterval, "PlanInterval"),
     (DjPlanContext, CorePlanContext, "PlanContext"),
+    (DjPlanTier, CorePlanTier, "PlanTier"),
+    (DjProductType, CoreProductType, "ProductType"),
     (DjAccountType, CoreAccountType, "AccountType"),
 ]
 

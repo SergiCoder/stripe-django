@@ -13,6 +13,7 @@ from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.request import Request
 
+from apps.billing.services import assign_free_plan
 from apps.users.models import AUTH_USER_CACHE_KEY, User
 
 logger = logging.getLogger(__name__)
@@ -151,11 +152,13 @@ class SupabaseJWTAuthentication(BaseAuthentication):
                 if pronouns is not None:
                     defaults["pronouns"] = str(pronouns).strip()
                 try:
-                    user, _ = User.objects.get_or_create(
+                    user, created = User.objects.get_or_create(
                         supabase_uid=supabase_uid,
                         deleted_at__isnull=True,
                         defaults=defaults,
                     )
+                    if created:
+                        assign_free_plan(user)
                 except IntegrityError:
                     raise AuthenticationFailed(
                         {

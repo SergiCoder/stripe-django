@@ -189,6 +189,7 @@ async def test_apply_promo_code_valid() -> None:
 
     with (
         patch("stripe.PromotionCode.list", return_value=mock_list),
+        patch("stripe.Subscription.retrieve", return_value={"discounts": []}),
         patch("stripe.Subscription.modify") as mock_modify,
     ):
         await apply_promo_code(stripe_subscription_id="sub_abc", promo_code="SAVE10")
@@ -200,6 +201,36 @@ async def test_apply_promo_code_valid() -> None:
 
 
 @pytest.mark.anyio
+async def test_apply_promo_code_preserves_existing_discounts() -> None:
+    """A new promo stacks alongside the subscription's current discounts."""
+    mock_promo = MagicMock()
+    mock_promo.id = "promo_new"
+    mock_coupon = MagicMock()
+    mock_coupon.valid = True
+    mock_promo.coupon = mock_coupon
+    mock_list = MagicMock()
+    mock_list.data = [mock_promo]
+
+    existing_sub = {"discounts": [{"id": "di_existing"}, "di_str_id"]}
+
+    with (
+        patch("stripe.PromotionCode.list", return_value=mock_list),
+        patch("stripe.Subscription.retrieve", return_value=existing_sub),
+        patch("stripe.Subscription.modify") as mock_modify,
+    ):
+        await apply_promo_code(stripe_subscription_id="sub_abc", promo_code="SAVE10")
+
+    mock_modify.assert_called_once_with(
+        "sub_abc",
+        discounts=[
+            {"discount": "di_existing"},
+            {"discount": "di_str_id"},
+            {"promotion_code": "promo_new"},
+        ],
+    )
+
+
+@pytest.mark.anyio
 async def test_apply_promo_code_invalid_propagates_error() -> None:
     mock_list = MagicMock()
     mock_list.data = []
@@ -207,3 +238,60 @@ async def test_apply_promo_code_invalid_propagates_error() -> None:
     with patch("stripe.PromotionCode.list", return_value=mock_list):
         with pytest.raises(InvalidPromoCodeError):
             await apply_promo_code(stripe_subscription_id="sub_abc", promo_code="BADCODE")
+
+
+# ── apply_promo_code edge cases ─────────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_apply_promo_code_no_discounts_key_on_sub() -> None:
+    """When sub has no ``discounts`` key, merged list has only the new promo."""
+    mock_promo = MagicMock()
+    mock_promo.id = "promo_nodiscount"
+    mock_coupon = MagicMock()
+    mock_coupon.valid = True
+    mock_promo.coupon = mock_coupon
+    mock_list = MagicMock()
+    mock_list.data = [mock_promo]
+
+    # Simulate a sub dict that does NOT contain the "discounts" key at all
+    existing_sub: dict[str, object] = {}
+
+    with (
+        patch("stripe.PromotionCode.list", return_value=mock_list),
+        patch("stripe.Subscription.retrieve", return_value=existing_sub),
+        patch("stripe.Subscription.modify") as mock_modify,
+    ):
+        await apply_promo_code(stripe_subscription_id="sub_abc", promo_code="NEWCODE")
+
+    mock_modify.assert_called_once_with(
+        "sub_abc",
+        discounts=[{"promotion_code": "promo_nodiscount"}],
+    )
+
+
+@pytest.mark.anyio
+async def test_apply_promo_code_skips_discount_entries_without_id() -> None:
+    """Dict entries in discounts[] without an ``id`` key are skipped."""
+    mock_promo = MagicMock()
+    mock_promo.id = "promo_skip"
+    mock_coupon = MagicMock()
+    mock_coupon.valid = True
+    mock_promo.coupon = mock_coupon
+    mock_list = MagicMock()
+    mock_list.data = [mock_promo]
+
+    existing_sub = {"discounts": [{"coupon": "coupon_no_id"}]}  # no "id" key
+
+    with (
+        patch("stripe.PromotionCode.list", return_value=mock_list),
+        patch("stripe.Subscription.retrieve", return_value=existing_sub),
+        patch("stripe.Subscription.modify") as mock_modify,
+    ):
+        await apply_promo_code(stripe_subscription_id="sub_abc", promo_code="SAVE10")
+
+    # The entry without "id" is skipped; only the new promo is in the list
+    mock_modify.assert_called_once_with(
+        "sub_abc",
+        discounts=[{"promotion_code": "promo_skip"}],
+    )

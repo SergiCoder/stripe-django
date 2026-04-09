@@ -3,9 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Literal
+from typing import Any, Literal
 
 import stripe
+
+# Stripe-python keeps its TypedDict param shapes in an underscore-prefixed
+# module and doesn't re-export them. Importing from the private path is the
+# only way to get nominal typing for the `discounts` parameter; if stripe
+# reorganises these modules the import will fail loudly at startup, which is
+# preferable to a silent fallback to `Any`.
+from stripe.params._subscription_modify_params import (
+    SubscriptionModifyParamsDiscount,
+    SubscriptionModifyParamsItem,
+)
 
 from saasmint_core.services.coupons import validate_promo_code
 
@@ -38,20 +48,16 @@ async def change_plan(
     item_id = await _get_first_item_id(stripe_subscription_id)
     proration: Literal["create_prorations", "none"] = "create_prorations" if prorate else "none"
 
+    item: SubscriptionModifyParamsItem = {"id": item_id, "price": new_stripe_price_id}
     if quantity is not None:
-        await asyncio.to_thread(
-            stripe.Subscription.modify,
-            stripe_subscription_id,
-            items=[{"id": item_id, "price": new_stripe_price_id, "quantity": quantity}],
-            proration_behavior=proration,
-        )
-    else:
-        await asyncio.to_thread(
-            stripe.Subscription.modify,
-            stripe_subscription_id,
-            items=[{"id": item_id, "price": new_stripe_price_id}],
-            proration_behavior=proration,
-        )
+        item["quantity"] = quantity
+
+    await asyncio.to_thread(
+        stripe.Subscription.modify,
+        stripe_subscription_id,
+        items=[item],
+        proration_behavior=proration,
+    )
 
 
 async def update_seat_count(
@@ -89,10 +95,27 @@ async def apply_promo_code(
     Raises InvalidPromoCodeError if the code is invalid or expired.
     DB state (discount_percent, discount_end_at, promotion_code_id) is synced
     via customer.subscription.updated webhook.
+
+    Passing ``discounts`` to ``Subscription.modify`` *replaces* the existing
+    discount set, so we retrieve the subscription first and re-pass the
+    current discounts alongside the new one to keep stacked promos intact.
     """
     promo = await validate_promo_code(promo_code)
+
+    sub = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
+    merged: list[SubscriptionModifyParamsDiscount] = []
+    raw_discounts: Any = sub["discounts"] if "discounts" in sub else None
+    for entry in raw_discounts or []:
+        if isinstance(entry, str):
+            merged.append({"discount": entry})
+        elif isinstance(entry, dict):
+            discount_id = entry.get("id")
+            if discount_id:
+                merged.append({"discount": str(discount_id)})
+    merged.append({"promotion_code": promo.id})
+
     await asyncio.to_thread(
         stripe.Subscription.modify,
         stripe_subscription_id,
-        discounts=[{"promotion_code": promo.id}],
+        discounts=merged,
     )

@@ -158,7 +158,7 @@ REST_FRAMEWORK = {
         "anon": "100/hour",
         "user": "1000/hour",
         "auth": "10/minute",
-        "billing": "30/hour",
+        "billing": "100/hour",
         "account": "120/hour",
         "account_export": "3/hour",
         "orgs": "60/hour",

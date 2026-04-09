@@ -9,7 +9,8 @@ A production-ready Django backend for building SaaS applications with Stripe bil
 - **Admin dashboard** — extended Django admin with subscription status, Stripe event log, and user impersonation via django-hijack
 - **Webhook processing** — idempotent event handling with database-backed deduplication
 - **Organisations** — multi-tenant orgs with role-based membership (owner, admin, member)
-- **Multi-plan support** — free, pro, enterprise (or define your own)
+- **Multi-plan support** — personal and team plans (free, basic, pro) with seat-based team pricing, or define your own
+- **One-time products** — credit packs (Boost) for non-subscription purchases via Stripe Checkout
 - **Dev seed data** — one command to populate the database with realistic test users, orgs, and subscriptions
 - **CI/CD** — GitHub Actions for lint, typecheck, and tests out of the box
 
@@ -160,9 +161,11 @@ make seed
 ## Stripe setup
 
 1. Create a [Stripe account](https://dashboard.stripe.com/register)
-2. Get your API keys from the [Stripe Dashboard](https://dashboard.stripe.com/apikeys)
-3. Create your products and prices in Stripe
-4. Set up a webhook endpoint pointing to `/api/v1/webhooks/stripe` with these events:
+2. Get your API keys from the [Stripe Dashboard](https://dashboard.stripe.com/apikeys) and put them in `.env.local`
+3. Define your catalog locally — edit `apps/billing/migrations/0005_seed_boost_products.py` and `0007_update_plans_and_prices.py` (or add new migrations) to set the plans/products you want, then run `make migrate`
+4. Push the local catalog to Stripe with `make sync-stripe` — this creates Stripe Products/Prices via `python manage.py sync_stripe_catalog` and writes the resulting `stripe_price_id` back onto `PlanPrice` / `ProductPrice`. The command is idempotent (uses Stripe `lookup_key`s) and should also be run after every deploy.
+5. Webhook forwarding for local development is handled automatically by the bundled `stripe-cli` service in `docker-compose.yml`. Run `stripe login` once on the host (its config is mounted into the container), then `make dev` will start the forwarder alongside Django. Tail it with `make stripe-logs`.
+6. In production, set up a webhook endpoint pointing to `/api/v1/webhooks/stripe` with these events:
    - `checkout.session.completed`
    - `customer.subscription.created`
    - `customer.subscription.updated`

@@ -15,6 +15,7 @@ from saasmint_core.domain.subscription import (
     PlanContext,
     PlanInterval,
     PlanPrice,
+    PlanTier,
     Subscription,
     SubscriptionStatus,
 )
@@ -105,6 +106,17 @@ class InMemorySubscriptionRepository:
     async def get_by_stripe_id(self, stripe_id: str) -> Subscription | None:
         return next((s for s in self._store.values() if s.stripe_id == stripe_id), None)
 
+    async def get_active_for_user(self, user_id: UUID) -> Subscription | None:
+        return next(
+            (
+                s
+                for s in self._store.values()
+                if s.user_id == user_id
+                and s.status in (SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING)
+            ),
+            None,
+        )
+
     async def get_active_for_customer(self, stripe_customer_id: UUID) -> Subscription | None:
         return next(
             (
@@ -122,6 +134,16 @@ class InMemorySubscriptionRepository:
 
     async def delete(self, subscription_id: UUID) -> None:
         self._store.pop(subscription_id, None)
+
+    async def delete_free_for_user(self, user_id: UUID) -> int:
+        to_delete = [
+            sid
+            for sid, sub in self._store.items()
+            if sub.user_id == user_id and sub.stripe_id is None
+        ]
+        for sid in to_delete:
+            del self._store[sid]
+        return len(to_delete)
 
 
 class InMemoryStripeEventRepository:
@@ -163,9 +185,22 @@ class InMemoryPlanRepository:
     async def list_active(self) -> list[Plan]:
         return [p for p in self._plans.values() if p.is_active]
 
-    async def get_price(self, plan_id: UUID, currency: str) -> PlanPrice | None:
+    async def get_free_plan(self) -> Plan | None:
         return next(
-            (p for p in self._prices.values() if p.plan_id == plan_id and p.currency == currency),
+            (
+                p
+                for p in self._plans.values()
+                if p.is_active
+                and p.context == PlanContext.PERSONAL
+                and p.tier == PlanTier.FREE
+                and any(pr.plan_id == p.id and pr.amount == 0 for pr in self._prices.values())
+            ),
+            None,
+        )
+
+    async def get_price(self, plan_id: UUID) -> PlanPrice | None:
+        return next(
+            (p for p in self._prices.values() if p.plan_id == plan_id),
             None,
         )
 
@@ -279,7 +314,6 @@ def make_plan_price(
         "id": uuid4(),
         "plan_id": plan_id,
         "stripe_price_id": stripe_price_id,
-        "currency": "usd",
         "amount": 999,
     }
     fields.update(overrides)
