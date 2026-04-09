@@ -123,5 +123,5 @@ def _fetch_github_primary_email(access_token: str) -> str:
     resp.raise_for_status()
     for entry in resp.json():
         if entry.get("primary") and entry.get("verified"):
-            return entry["email"]  # type: ignore[no-any-return]
+            return str(entry["email"])
     raise ValueError("No verified primary email found on GitHub account")

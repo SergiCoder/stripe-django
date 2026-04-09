@@ -25,7 +25,7 @@ _PHONE_PREFIX_CHOICES = [("", "---------")] + [
 _TIMEZONE_CHOICES = [("", "---------")] + [(v, v) for v in sorted(available_timezones())]
 
 
-class UserChangeForm(forms.ModelForm):  # type: ignore[type-arg]
+class UserChangeForm(forms.ModelForm):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
     class Meta:
         model = User
         fields = (
@@ -68,7 +68,7 @@ if TYPE_CHECKING:
 
 
 @admin.register(User)
-class UserAdmin(BaseUserAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic but BaseUserAdmin doesn't declare its type parameter
+class UserAdmin(BaseUserAdmin):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
     form = UserChangeForm
 
     class Media:
@@ -132,7 +132,7 @@ class UserAdmin(BaseUserAdmin):  # type: ignore[type-arg]  # django-stubs ModelA
 
 
 @admin.register(SocialAccount)
-class SocialAccountAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
+class SocialAccountAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
     list_display = ("user", "provider", "provider_user_id", "created_at")
     list_filter = ("provider",)
     search_fields = ("user__email", "provider_user_id")

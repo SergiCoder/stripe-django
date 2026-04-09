@@ -127,8 +127,12 @@ class TestUpdateUserSerializer:
         ser = UpdateUserSerializer(data={"avatar_url": None})
         assert ser.is_valid(), ser.errors
 
-    def test_invalid_avatar_url_rejected(self):
-        ser = UpdateUserSerializer(data={"avatar_url": "not-a-url"})
+    def test_avatar_url_accepts_relative_path(self):
+        ser = UpdateUserSerializer(data={"avatar_url": "/media/avatars/abc.jpg"})
+        assert ser.is_valid(), ser.errors
+
+    def test_avatar_url_too_long_rejected(self):
+        ser = UpdateUserSerializer(data={"avatar_url": "x" * 501})
         assert not ser.is_valid()
         assert "avatar_url" in ser.errors
 

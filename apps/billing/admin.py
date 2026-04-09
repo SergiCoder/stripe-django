@@ -15,14 +15,14 @@ from apps.billing.models import (
 
 
 @admin.register(Plan)
-class PlanAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic; no type param needed at runtime
+class PlanAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
     list_display = ("name", "context", "tier", "interval", "is_active")
     list_filter = ("context", "tier", "interval", "is_active")
     search_fields = ("name",)
 
 
 @admin.register(PlanPrice)
-class PlanPriceAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic; no type param needed at runtime
+class PlanPriceAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
     list_display = ("plan", "amount", "stripe_price_id")
     search_fields = ("stripe_price_id",)
     list_select_related = ("plan",)
@@ -30,21 +30,21 @@ class PlanPriceAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stub
 
 
 @admin.register(Product)
-class ProductAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic; no type param needed at runtime
+class ProductAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
     list_display = ("name", "type", "credits", "is_active")
     list_filter = ("type", "is_active")
     search_fields = ("name",)
 
 
 @admin.register(ProductPrice)
-class ProductPriceAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic; no type param needed at runtime
+class ProductPriceAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
     list_display = ("product", "amount", "stripe_price_id")
     search_fields = ("stripe_price_id",)
     list_select_related = ("product",)
 
 
 @admin.register(StripeCustomer)
-class StripeCustomerAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic; no type param needed at runtime
+class StripeCustomerAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
     list_display = ("stripe_id", "user", "org", "livemode", "created_at")
     list_filter = ("livemode",)
     search_fields = ("stripe_id",)
@@ -53,7 +53,7 @@ class StripeCustomerAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django
 
 
 @admin.register(Subscription)
-class SubscriptionAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic; no type param needed at runtime
+class SubscriptionAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
     list_display = (
         "stripe_id",
         "owner",
@@ -90,7 +90,7 @@ class SubscriptionAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-s
 
 
 @admin.register(StripeEvent)
-class StripeEventAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic; no type param needed at runtime
+class StripeEventAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
     list_display = ("stripe_id", "type", "livemode", "processed_at", "error", "created_at")
     list_filter = ("type", "livemode")
     search_fields = ("stripe_id", "type")
