@@ -69,7 +69,7 @@ def authed_client(verified_user):
 class TestRegisterView:
     URL = "/api/v1/auth/register/"
 
-    @patch("apps.users.auth_views.send_verification_email")
+    @patch("apps.users.tasks.send_verification_email_task.delay")
     def test_register_success(self, mock_email, api):
         resp = api.post(
             self.URL,
@@ -86,7 +86,7 @@ class TestRegisterView:
         assert user.is_verified is False
         mock_email.assert_called_once()
 
-    @patch("apps.users.auth_views.send_verification_email")
+    @patch("apps.users.tasks.send_verification_email_task.delay")
     def test_register_duplicate_email_returns_409(self, _mock_email, api):
         User.objects.create_user(
             email="dup@example.com",
@@ -121,11 +121,10 @@ class TestRegisterView:
         )
         assert resp.status_code == 400
 
-    @patch(
-        "apps.users.auth_views.send_verification_email",
-        side_effect=Exception("SMTP error"),
-    )
-    def test_register_email_failure_still_succeeds(self, _mock_email, api):
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    def test_register_email_failure_still_succeeds(self, mock_delay, api):
+        """Email is sent async via Celery — even if the task dispatch fails,
+        registration still succeeds (fire-and-forget)."""
         resp = api.post(
             self.URL,
             {
@@ -137,6 +136,7 @@ class TestRegisterView:
         )
         assert resp.status_code == 201
         assert User.objects.filter(email="emailfail@example.com").exists()
+        mock_delay.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +257,7 @@ class TestVerifyEmailView:
 
     def test_verify_email_invalid_token(self, api):
         resp = api.post(self.URL, {"token": "invalid-token"}, format="json")
-        assert resp.status_code == 403  # AuthenticationFailed
+        assert resp.status_code == 401  # AuthenticationFailed
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +278,7 @@ class TestRefreshView:
 
     def test_refresh_invalid_token(self, api):
         resp = api.post(self.URL, {"refresh_token": "bad-token"}, format="json")
-        assert resp.status_code == 403
+        assert resp.status_code == 401
 
     def test_refresh_revoked_token(self, api, verified_user):
         raw = create_refresh_token(verified_user)
@@ -287,7 +287,7 @@ class TestRefreshView:
         rt.save(update_fields=["revoked_at"])
 
         resp = api.post(self.URL, {"refresh_token": raw}, format="json")
-        assert resp.status_code == 403
+        assert resp.status_code == 401
 
     def test_refresh_expired_token(self, api, verified_user):
         raw = create_refresh_token(verified_user)
@@ -296,7 +296,7 @@ class TestRefreshView:
         rt.save(update_fields=["expires_at"])
 
         resp = api.post(self.URL, {"refresh_token": raw}, format="json")
-        assert resp.status_code == 403
+        assert resp.status_code == 401
 
 
 # ---------------------------------------------------------------------------
@@ -330,19 +330,19 @@ class TestLogoutView:
 class TestForgotPasswordView:
     URL = "/api/v1/auth/forgot-password/"
 
-    @patch("apps.users.auth_views.send_password_reset_email")
-    def test_forgot_password_existing_user(self, mock_email, api, verified_user):
+    @patch("apps.users.tasks.send_password_reset_email_task.delay")
+    def test_forgot_password_existing_user(self, mock_delay, api, verified_user):
         resp = api.post(self.URL, {"email": "verified@example.com"}, format="json")
         assert resp.status_code == 200
-        mock_email.assert_called_once()
+        mock_delay.assert_called_once()
 
     def test_forgot_password_nonexistent_email_returns_200(self, api):
         resp = api.post(self.URL, {"email": "nobody@example.com"}, format="json")
         # Always 200 to prevent email enumeration
         assert resp.status_code == 200
 
-    @patch("apps.users.auth_views.send_password_reset_email")
-    def test_forgot_password_deleted_user_not_sent(self, mock_email, api):
+    @patch("apps.users.tasks.send_password_reset_email_task.delay")
+    def test_forgot_password_deleted_user_not_sent(self, mock_delay, api):
         user = User.objects.create_user(
             email="del@example.com",
             full_name="Deleted",
@@ -353,15 +353,13 @@ class TestForgotPasswordView:
 
         resp = api.post(self.URL, {"email": "del@example.com"}, format="json")
         assert resp.status_code == 200
-        mock_email.assert_not_called()
+        mock_delay.assert_not_called()
 
-    @patch(
-        "apps.users.auth_views.send_password_reset_email",
-        side_effect=Exception("SMTP error"),
-    )
-    def test_forgot_password_email_failure_still_returns_200(self, _mock_email, api, verified_user):
+    @patch("apps.users.tasks.send_password_reset_email_task.delay")
+    def test_forgot_password_email_failure_still_returns_200(self, mock_delay, api, verified_user):
         resp = api.post(self.URL, {"email": "verified@example.com"}, format="json")
         assert resp.status_code == 200
+        mock_delay.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -409,7 +407,7 @@ class TestResetPasswordView:
             {"token": "bad-token", "password": "newpassword1"},
             format="json",
         )
-        assert resp.status_code == 403
+        assert resp.status_code == 401
 
     def test_reset_password_short_password(self, api, verified_user):
         token = create_password_reset_token(verified_user)

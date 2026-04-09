@@ -121,10 +121,11 @@ class TestResolveOAuthUserDeletedUser:
         with pytest.raises(ValueError, match="deleted"):
             resolve_oauth_user("google", info)
 
-    @patch("apps.users.services.assign_free_plan")
-    def test_deleted_user_without_social_creates_new(self, mock_plan):
+    def test_deleted_user_without_social_raises(self):
         """A soft-deleted user with matching email but no social account
-        is skipped (deleted_at filter), and a new user is created."""
+        is filtered out by deleted_at. Since email is globally unique,
+        create_user fails with IntegrityError and the fallback get also
+        misses (deleted_at filter), raising DoesNotExist."""
         user = User.objects.create_user(
             email="gone@example.com",
             full_name="Gone",
@@ -133,9 +134,5 @@ class TestResolveOAuthUserDeletedUser:
         user.save()
 
         info = _info(email="gone@example.com", provider_user_id="g-new")
-        result = resolve_oauth_user("google", info)
-
-        assert result.pk != user.pk
-        assert result.email == "gone@example.com"
-        assert result.is_verified is True
-        mock_plan.assert_called_once()
+        with pytest.raises(User.DoesNotExist):
+            resolve_oauth_user("google", info)

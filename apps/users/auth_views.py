@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 
 from django.conf import settings
 from django.contrib.auth import authenticate
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -82,12 +82,13 @@ class RegisterView(APIView):
             )
 
         try:
-            user = User.objects.create_user(
-                email=email,
-                password=ser.validated_data["password"],
-                full_name=ser.validated_data["full_name"],
-                is_verified=False,
-            )
+            with transaction.atomic():
+                user = User.objects.create_user(
+                    email=email,
+                    password=ser.validated_data["password"],
+                    full_name=ser.validated_data["full_name"],
+                    is_verified=False,
+                )
         except IntegrityError:
             return Response(
                 {"detail": "Email already registered.", "code": "email_exists"},

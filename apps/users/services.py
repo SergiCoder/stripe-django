@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 
 from apps.billing.services import assign_free_plan
 from apps.users.models import SocialAccount, User
@@ -33,13 +33,14 @@ def resolve_oauth_user(provider: str, user_info: OAuthUserInfo) -> User:
         user = User.objects.get(email=user_info.email, deleted_at__isnull=True)
     except User.DoesNotExist:
         try:
-            user = User.objects.create_user(
-                email=user_info.email,
-                full_name=user_info.full_name,
-                avatar_url=user_info.avatar_url,
-                is_verified=True,
-                registration_method=provider,
-            )
+            with transaction.atomic():
+                user = User.objects.create_user(
+                    email=user_info.email,
+                    full_name=user_info.full_name,
+                    avatar_url=user_info.avatar_url,
+                    is_verified=True,
+                    registration_method=provider,
+                )
         except IntegrityError:
             # Race: another request created the user between our get and create
             user = User.objects.get(email=user_info.email, deleted_at__isnull=True)
