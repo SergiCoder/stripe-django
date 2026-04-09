@@ -9,6 +9,7 @@ from urllib.parse import urlencode
 
 from django.conf import settings
 from django.contrib.auth import authenticate
+from django.db import IntegrityError
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -80,22 +81,25 @@ class RegisterView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        user = User.objects.create_user(
-            email=email,
-            password=ser.validated_data["password"],
-            full_name=ser.validated_data["full_name"],
-            is_verified=False,
-        )
+        try:
+            user = User.objects.create_user(
+                email=email,
+                password=ser.validated_data["password"],
+                full_name=ser.validated_data["full_name"],
+                is_verified=False,
+            )
+        except IntegrityError:
+            return Response(
+                {"detail": "Email already registered.", "code": "email_exists"},
+                status=status.HTTP_409_CONFLICT,
+            )
         assign_free_plan(user)
 
-        # Send verification email
+        # Send verification email asynchronously via Celery
         token = create_email_verification_token(user)
-        try:
-            from apps.users.email import send_verification_email
+        from apps.users.tasks import send_verification_email_task
 
-            send_verification_email(user.email, token)
-        except Exception:
-            logger.exception("Failed to send verification email to %s", user.email)
+        send_verification_email_task.delay(user.email, token)
 
         refresh = create_refresh_token(user)
         return _token_response(user, refresh, http_status=status.HTTP_201_CREATED)
@@ -211,13 +215,11 @@ class ForgotPasswordView(APIView):
                 deleted_at__isnull=True,
             )
             token = create_password_reset_token(user)
-            from apps.users.email import send_password_reset_email
+            from apps.users.tasks import send_password_reset_email_task
 
-            send_password_reset_email(user.email, token)
+            send_password_reset_email_task.delay(user.email, token)
         except User.DoesNotExist:
             pass
-        except Exception:
-            logger.exception("Failed to send password reset email")
 
         return Response({"detail": "If the email exists, a reset link has been sent."})
 
@@ -372,7 +374,9 @@ class OAuthCallbackView(APIView):
                 headers={"Location": f"{frontend_url}/auth/error?error=account_deactivated"},
             )
 
-        if not user.is_active or user.deleted_at is not None:
+        # resolve_oauth_user already rejects deleted_at users via ValueError,
+        # but is_active is not checked there.
+        if not user.is_active:
             return Response(
                 status=status.HTTP_302_FOUND,
                 headers={"Location": f"{frontend_url}/auth/error?error=account_deactivated"},
