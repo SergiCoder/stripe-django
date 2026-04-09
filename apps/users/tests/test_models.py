@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 import pytest
 from django.core.cache import cache
 
-from apps.users.models import AccountType, User
+from apps.users.models import AccountType, RegistrationMethod, SocialAccount, User
 
 
 @pytest.mark.django_db
@@ -136,3 +136,87 @@ class TestUserModel:
         user.save(update_fields=["scheduled_deletion_at"])
         user.refresh_from_db()
         assert user.scheduled_deletion_at is None
+
+
+@pytest.mark.django_db
+class TestRegistrationMethod:
+    def test_default_is_email(self):
+        user = User.objects.create_user(email="reg@example.com", full_name="Reg User")
+        assert user.registration_method == RegistrationMethod.EMAIL
+
+    def test_can_set_to_google(self):
+        user = User.objects.create_user(
+            email="google@example.com",
+            full_name="Google User",
+            registration_method=RegistrationMethod.GOOGLE,
+        )
+        assert user.registration_method == "google"
+
+    def test_can_set_to_github(self):
+        user = User.objects.create_user(
+            email="github@example.com",
+            full_name="GitHub User",
+            registration_method=RegistrationMethod.GITHUB,
+        )
+        assert user.registration_method == "github"
+
+    def test_can_set_to_microsoft(self):
+        user = User.objects.create_user(
+            email="ms@example.com",
+            full_name="MS User",
+            registration_method=RegistrationMethod.MICROSOFT,
+        )
+        assert user.registration_method == "microsoft"
+
+
+@pytest.mark.django_db
+class TestSocialAccount:
+    def test_create_social_account(self):
+        user = User.objects.create_user(email="social@example.com", full_name="Social User")
+        social = SocialAccount.objects.create(
+            user=user,
+            provider="google",
+            provider_user_id="123456",
+        )
+        assert social.provider == "google"
+        assert social.provider_user_id == "123456"
+        assert social.user == user
+
+    def test_str(self):
+        user = User.objects.create_user(email="str-social@example.com", full_name="Str Social")
+        social = SocialAccount.objects.create(
+            user=user,
+            provider="github",
+            provider_user_id="789",
+        )
+        assert "github" in str(social)
+        assert str(user.id) in str(social)
+
+    def test_unique_provider_user_id_per_provider(self):
+        user1 = User.objects.create_user(email="u1@example.com", full_name="User One")
+        user2 = User.objects.create_user(email="u2@example.com", full_name="User Two")
+        SocialAccount.objects.create(user=user1, provider="google", provider_user_id="same-id")
+        from django.db import IntegrityError
+
+        with pytest.raises(IntegrityError):
+            SocialAccount.objects.create(user=user2, provider="google", provider_user_id="same-id")
+
+    def test_unique_user_per_provider(self):
+        user = User.objects.create_user(email="dup@example.com", full_name="Dup User")
+        SocialAccount.objects.create(user=user, provider="github", provider_user_id="111")
+        from django.db import IntegrityError
+
+        with pytest.raises(IntegrityError):
+            SocialAccount.objects.create(user=user, provider="github", provider_user_id="222")
+
+    def test_user_can_have_multiple_providers(self):
+        user = User.objects.create_user(email="multi@example.com", full_name="Multi User")
+        SocialAccount.objects.create(user=user, provider="google", provider_user_id="g1")
+        SocialAccount.objects.create(user=user, provider="github", provider_user_id="gh1")
+        assert user.social_accounts.count() == 2
+
+    def test_cascade_delete(self):
+        user = User.objects.create_user(email="cascade@example.com", full_name="Cascade User")
+        SocialAccount.objects.create(user=user, provider="google", provider_user_id="del1")
+        user.delete()
+        assert SocialAccount.objects.filter(provider_user_id="del1").count() == 0

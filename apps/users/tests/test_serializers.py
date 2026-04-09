@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from apps.users.models import User
+from apps.users.models import SocialAccount, User
 from apps.users.serializers import UpdateUserSerializer, UserSerializer
 
 
@@ -70,6 +70,32 @@ class TestUserSerializer:
         data = UserSerializer(user).data
         assert data["phone"]["prefix"] == "+1"
         assert data["phone"]["number"] == "5551234567"
+
+    def test_registration_method_in_response(self):
+        user = User.objects.create_user(email="reg@example.com", full_name="Reg User")
+        data = UserSerializer(user).data
+        assert data["registration_method"] == "email"
+
+    def test_registration_method_oauth(self):
+        user = User.objects.create_user(
+            email="oauth@example.com",
+            full_name="OAuth User",
+            registration_method="google",
+        )
+        data = UserSerializer(user).data
+        assert data["registration_method"] == "google"
+
+    def test_linked_providers_empty(self):
+        user = User.objects.create_user(email="noprov@example.com", full_name="No Prov")
+        data = UserSerializer(user).data
+        assert data["linked_providers"] == []
+
+    def test_linked_providers_with_accounts(self):
+        user = User.objects.create_user(email="linked@example.com", full_name="Linked User")
+        SocialAccount.objects.create(user=user, provider="google", provider_user_id="g1")
+        SocialAccount.objects.create(user=user, provider="github", provider_user_id="gh1")
+        data = UserSerializer(user).data
+        assert sorted(data["linked_providers"]) == ["github", "google"]
 
 
 class TestUpdateUserSerializer:
