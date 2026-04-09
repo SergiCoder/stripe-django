@@ -733,3 +733,37 @@ class TestCurrencyConversion:
         price = resp.data["plan"]["price"]
         assert "currency" in price
         assert "display_amount" in price
+
+    def test_product_endpoint_currency_conversion(self, authed_client):
+        """Products endpoint also respects ?currency= param."""
+        product = Product.objects.create(
+            name="50 Credits", type="one_time", credits=50, is_active=True
+        )
+        ProductPrice.objects.create(product=product, stripe_price_id="price_prod_cur", amount=500)
+        ExchangeRate.objects.create(currency="eur", rate="0.91", fetched_at=datetime.now(UTC))
+        resp = authed_client.get("/api/v1/billing/products/?currency=eur")
+        price = resp.data[0]["price"]
+        assert price["currency"] == "eur"
+        # 500 * 0.91 = 455 → /100 → 4.55
+        assert price["display_amount"] == 4.55
+
+    def test_user_default_currency_returns_usd(self, authed_client, user, plan, plan_price):
+        """User with default preferred_currency='usd' gets USD without exchange rate lookup."""
+        assert user.preferred_currency == "usd"
+        resp = authed_client.get("/api/v1/billing/plans/")
+        assert resp.data[0]["price"]["currency"] == "usd"
+
+    def test_user_unsupported_preferred_currency_falls_back_to_usd(
+        self, authed_client, user, plan, plan_price
+    ):
+        """User with a preferred_currency not in SUPPORTED_CURRENCIES should get USD."""
+        user.preferred_currency = "xyz"
+        user.save()
+        resp = authed_client.get("/api/v1/billing/plans/")
+        assert resp.data[0]["price"]["currency"] == "usd"
+
+    def test_empty_currency_param_ignored(self, plan, plan_price):
+        """?currency= (empty string) should fall back to USD."""
+        client = APIClient()
+        resp = client.get("/api/v1/billing/plans/?currency=")
+        assert resp.data[0]["price"]["currency"] == "usd"

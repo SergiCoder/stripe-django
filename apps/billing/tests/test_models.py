@@ -209,6 +209,35 @@ class TestProductPrice:
         assert "$49.99" in str(price)
 
 
+@pytest.mark.django_db
+class TestExchangeRate:
+    def test_str(self, db):
+        from apps.billing.models import ExchangeRate
+
+        er = ExchangeRate.objects.create(
+            currency="eur",
+            rate="0.91000000",
+            fetched_at=datetime(2026, 4, 1, tzinfo=UTC),
+        )
+        assert "EUR" in str(er)
+        assert "0.91" in str(er)
+
+    def test_unique_currency(self, db):
+        from apps.billing.models import ExchangeRate
+
+        ExchangeRate.objects.create(
+            currency="gbp",
+            rate="0.79",
+            fetched_at=datetime(2026, 4, 1, tzinfo=UTC),
+        )
+        with pytest.raises(IntegrityError):
+            ExchangeRate.objects.create(
+                currency="gbp",
+                rate="0.80",
+                fetched_at=datetime(2026, 4, 2, tzinfo=UTC),
+            )
+
+
 class TestActiveSubscriptionStatuses:
     def test_contains_active_and_trialing(self):
         values = [s.value for s in ACTIVE_SUBSCRIPTION_STATUSES]

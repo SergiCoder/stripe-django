@@ -272,6 +272,26 @@ class TestUpdateSubscriptionSerializer:
 
 
 @pytest.mark.django_db
+class TestPlanPriceSerializerCurrency:
+    """PlanPriceSerializer with non-USD currency context."""
+
+    def test_converts_amount_with_eur_context(self, plan_price):
+        ctx = {"currency": "eur", "rate": 0.91}
+        data = PlanPriceSerializer(plan_price, context=ctx).data
+        assert data["currency"] == "eur"
+        # 999 * 0.91 = 909.09 → round → 909 → /100 → 9.09
+        assert data["display_amount"] == 9.09
+        assert data["amount"] == 999  # original unchanged
+
+    def test_converts_amount_with_jpy_zero_decimal(self, plan_price):
+        ctx = {"currency": "jpy", "rate": 149.5}
+        data = PlanPriceSerializer(plan_price, context=ctx).data
+        assert data["currency"] == "jpy"
+        # 999 * 149.5 = 149350.5 → round → 149350 → zero-decimal → 149350.0
+        assert data["display_amount"] == 149350.0
+
+
+@pytest.mark.django_db
 class TestProductPriceSerializer:
     def test_serializes_fields(self):
         product = Product.objects.create(
@@ -286,6 +306,19 @@ class TestProductPriceSerializer:
 
     def test_model_fields_read_only(self):
         assert set(ProductPriceSerializer.Meta.read_only_fields) == {"id", "amount"}
+
+    def test_converts_amount_with_currency_context(self):
+        product = Product.objects.create(
+            name="Credits", type="one_time", credits=50, is_active=True
+        )
+        price = ProductPrice.objects.create(
+            product=product, stripe_price_id="price_pp_ctx", amount=500
+        )
+        ctx = {"currency": "gbp", "rate": 0.79}
+        data = ProductPriceSerializer(price, context=ctx).data
+        assert data["currency"] == "gbp"
+        # 500 * 0.79 = 395 → round → 395 → /100 → 3.95
+        assert data["display_amount"] == 3.95
 
 
 @pytest.mark.django_db

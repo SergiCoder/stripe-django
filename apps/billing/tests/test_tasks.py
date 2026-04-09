@@ -206,3 +206,30 @@ class TestSyncExchangeRates:
             sync_exchange_rates.apply().get()
 
         assert ExchangeRate.objects.count() == 0
+
+    def test_skips_currencies_missing_from_stripe_response(self):
+        """Currencies in SUPPORTED_CURRENCIES but absent from Stripe rates are skipped."""
+        from apps.billing.models import ExchangeRate
+
+        # Only return eur — all other supported currencies should be skipped
+        mock_obj = MagicMock()
+        mock_obj.rates = {"eur": 0.91}
+
+        with patch("stripe.ExchangeRate.retrieve", return_value=mock_obj):
+            sync_exchange_rates.apply().get()
+
+        assert ExchangeRate.objects.count() == 1
+        assert ExchangeRate.objects.filter(currency="eur").exists()
+
+    def test_usd_never_stored(self):
+        """USD is skipped even if present in Stripe rates (it's the base currency)."""
+        from apps.billing.models import ExchangeRate
+
+        mock_obj = MagicMock()
+        mock_obj.rates = {"usd": 1.0, "eur": 0.91}
+
+        with patch("stripe.ExchangeRate.retrieve", return_value=mock_obj):
+            sync_exchange_rates.apply().get()
+
+        assert not ExchangeRate.objects.filter(currency="usd").exists()
+        assert ExchangeRate.objects.filter(currency="eur").exists()
