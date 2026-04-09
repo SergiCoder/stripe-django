@@ -64,7 +64,11 @@ class RegisterView(APIView):
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
     throttle_scope = "auth"
 
-    @extend_schema(request=RegisterSerializer, responses=TokenResponseSerializer, tags=["auth"])
+    @extend_schema(
+        request=RegisterSerializer,
+        responses={201: TokenResponseSerializer},
+        tags=["auth"],
+    )
     def post(self, request: Request) -> Response:
         ser = RegisterSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
@@ -141,7 +145,7 @@ class LoginView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        if not user.is_active:
+        if not user.is_active or user.deleted_at is not None:
             return Response(
                 {"detail": "Account is deactivated.", "code": "account_deactivated"},
                 status=status.HTTP_401_UNAUTHORIZED,
@@ -329,9 +333,10 @@ class OAuthCallbackView(APIView):
         frontend_url: str = settings.FRONTEND_URL
 
         if error:
+            safe_error = urlencode({"error": error})
             return Response(
                 status=status.HTTP_302_FOUND,
-                headers={"Location": f"{frontend_url}/auth/error?error={error}"},
+                headers={"Location": f"{frontend_url}/auth/error?{safe_error}"},
             )
 
         expected_state = request.session.pop("oauth_state", None)
@@ -359,9 +364,15 @@ class OAuthCallbackView(APIView):
 
         from apps.users.services import resolve_oauth_user
 
-        user = resolve_oauth_user(provider, user_info)
+        try:
+            user = resolve_oauth_user(provider, user_info)
+        except ValueError:
+            return Response(
+                status=status.HTTP_302_FOUND,
+                headers={"Location": f"{frontend_url}/auth/error?error=account_deactivated"},
+            )
 
-        if not user.is_active:
+        if not user.is_active or user.deleted_at is not None:
             return Response(
                 status=status.HTTP_302_FOUND,
                 headers={"Location": f"{frontend_url}/auth/error?error=account_deactivated"},

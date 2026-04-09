@@ -152,9 +152,12 @@ def _verify_one_time_token(model_class: Any, raw_token: str, label: str) -> User
     if obj.expires_at <= datetime.now(UTC):
         raise AuthenticationFailed({"detail": "Token has expired.", "code": "token_expired"})
 
+    user: User = obj.user
+    if not user.is_active or user.deleted_at is not None:
+        raise AuthenticationFailed({"detail": "User not found.", "code": "user_not_found"})
+
     obj.used_at = datetime.now(UTC)
     obj.save(update_fields=["used_at"])
-    user: User = obj.user
     return user
 
 

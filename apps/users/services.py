@@ -20,12 +20,15 @@ def resolve_oauth_user(provider: str, user_info: OAuthUserInfo) -> User:
             provider=provider,
             provider_user_id=user_info.provider_user_id,
         )
-        return social.user
+        user = social.user
+        if user.deleted_at is not None:
+            raise ValueError("Account has been deleted.")
+        return user
     except SocialAccount.DoesNotExist:
         pass
 
     try:
-        user = User.objects.get(email=user_info.email)
+        user = User.objects.get(email=user_info.email, deleted_at__isnull=True)
     except User.DoesNotExist:
         user = User.objects.create_user(
             email=user_info.email,
