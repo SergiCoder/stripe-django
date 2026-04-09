@@ -147,6 +147,12 @@ class LoginView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
+        if not user.is_verified:
+            return Response(
+                {"detail": "Email not verified.", "code": "email_not_verified"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         refresh = create_refresh_token(user)
         return _token_response(user, refresh)
 
