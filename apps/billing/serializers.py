@@ -93,8 +93,6 @@ class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
             "status",
             "plan",
             "quantity",
-            "discount_percent",
-            "discount_end_at",
             "trial_ends_at",
             "current_period_start",
             "current_period_end",
@@ -107,9 +105,6 @@ class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
 class CheckoutRequestSerializer(serializers.Serializer[object]):
     plan_price_id = serializers.UUIDField()
     quantity = serializers.IntegerField(default=1, min_value=1, max_value=10000)
-    promo_code = serializers.CharField(
-        required=False, allow_null=True, default=None, max_length=255
-    )
     success_url = serializers.URLField()
     cancel_url = serializers.URLField()
     trial_period_days = serializers.IntegerField(
@@ -153,7 +148,3 @@ class UpdateSubscriptionSerializer(serializers.Serializer[object]):
                 "'cancel_at_period_end' cannot be combined with 'plan_price_id' or 'quantity'."
             )
         return attrs
-
-
-class PromoCodeSerializer(serializers.Serializer[object]):
-    promo_code = serializers.CharField(max_length=255)

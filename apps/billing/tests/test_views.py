@@ -508,40 +508,6 @@ class TestUpdateSubscription:
 
 
 @pytest.mark.django_db
-class TestApplyPromoCodeView:
-    @patch("apps.billing.views.apply_promo_code", new_callable=AsyncMock)
-    def test_applies_promo(self, mock_promo, authed_client, subscription):
-        resp = authed_client.post(
-            "/api/v1/billing/subscription/promo-code/",
-            {"promo_code": "SAVE20"},
-            format="json",
-        )
-        assert resp.status_code == 204
-        mock_promo.assert_called_once()
-
-    def test_no_subscription_returns_404(self, authed_client, user):
-        resp = authed_client.post(
-            "/api/v1/billing/subscription/promo-code/",
-            {"promo_code": "SAVE20"},
-            format="json",
-        )
-        assert resp.status_code == 404
-
-    def test_missing_promo_code_returns_400(self, authed_client, subscription):
-        resp = authed_client.post("/api/v1/billing/subscription/promo-code/", {}, format="json")
-        assert resp.status_code == 400
-
-    def test_unauthenticated_rejected(self):
-        client = APIClient()
-        resp = client.post(
-            "/api/v1/billing/subscription/promo-code/",
-            {"promo_code": "SAVE20"},
-            format="json",
-        )
-        assert resp.status_code in (401, 403)
-
-
-@pytest.mark.django_db
 class TestProductListView:
     @pytest.fixture
     def product(self):

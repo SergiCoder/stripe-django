@@ -75,9 +75,6 @@ class Subscription(BaseModel):
     status: SubscriptionStatus
     plan_id: UUID
     quantity: int = 1
-    promotion_code_id: str | None = None
-    discount_percent: float | None = None
-    discount_end_at: datetime | None = None
     trial_ends_at: datetime | None = None
     current_period_start: datetime
     current_period_end: datetime

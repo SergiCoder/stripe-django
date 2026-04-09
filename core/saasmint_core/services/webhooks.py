@@ -6,7 +6,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any
 from uuid import uuid4
 
 import stripe
@@ -99,39 +99,6 @@ async def _dispatch(event: dict[str, Any], repos: WebhookRepos) -> None:
             logger.debug("Unhandled Stripe event type: %s", event["type"])
 
 
-def _extract_discount(sub_data: dict[str, Any]) -> tuple[str | None, float | None, datetime | None]:
-    """Extract promotion code, discount percent, and discount end from raw sub data.
-
-    Stripe API 2026-03-25.dahlia removes the singular ``subscription.discount``
-    field in favour of a ``discounts`` array (stackable discounts). We read the
-    first entry of ``discounts`` when present and fall back to the legacy
-    singular field for older fixtures / pre-Basil API versions.
-    """
-    discount: Any = None
-    discounts_list: Any = sub_data.get("discounts")
-    if discounts_list:
-        first = discounts_list[0]
-        # When expanded, entries are full Discount objects; otherwise they're
-        # plain IDs which carry no coupon info we can decode here.
-        if isinstance(first, dict):
-            discount = first
-    if discount is None:
-        discount = sub_data.get("discount")
-    if not discount or not isinstance(discount, dict):
-        return None, None, None
-
-    raw_promo = discount.get("promotion_code")
-    promotion_code_id = str(raw_promo) if raw_promo else None
-
-    coupon: dict[str, Any] = cast(dict[str, Any], discount.get("coupon") or {})
-    discount_percent = float(coupon["percent_off"]) if coupon.get("percent_off") else None
-
-    raw_end = discount.get("end")
-    discount_end_at = datetime.fromtimestamp(int(raw_end), tz=UTC) if raw_end is not None else None
-
-    return promotion_code_id, discount_percent, discount_end_at
-
-
 def _ts_to_dt(value: int | float | None) -> datetime | None:
     """Convert an optional Unix timestamp to a UTC datetime."""
     return datetime.fromtimestamp(int(value), tz=UTC) if value is not None else None
@@ -179,8 +146,6 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
     if plan_price is None:
         logger.warning("Received subscription event for unknown price %s", price_id)
         raise WebhookDataError(f"Unknown price {price_id}")
-    promotion_code_id, discount_percent, discount_end_at = _extract_discount(sub_data)
-
     subscription = Subscription(
         id=existing.id if existing else uuid4(),
         stripe_id=stripe_sub_id,
@@ -189,9 +154,6 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
         status=SubscriptionStatus(str(sub_data["status"])),
         plan_id=plan_price.plan_id,
         quantity=int(first_item.get("quantity") or 1),
-        promotion_code_id=promotion_code_id,
-        discount_percent=discount_percent,
-        discount_end_at=discount_end_at,
         trial_ends_at=_ts_to_dt(sub_data.get("trial_end")),
         current_period_start=_ts_to_dt_required(period_start),
         current_period_end=_ts_to_dt_required(period_end),

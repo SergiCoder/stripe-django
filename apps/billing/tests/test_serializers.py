@@ -14,7 +14,6 @@ from apps.billing.serializers import (
     PortalRequestSerializer,
     ProductPriceSerializer,
     ProductSerializer,
-    PromoCodeSerializer,
     SubscriptionSerializer,
     UpdateSubscriptionSerializer,
 )
@@ -130,18 +129,6 @@ class TestCheckoutRequestSerializer:
         )
         assert not ser.is_valid()
         assert "quantity" in ser.errors
-
-    def test_promo_code_optional(self, settings):
-        settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
-        ser = CheckoutRequestSerializer(
-            data={
-                "plan_price_id": _PLAN_PRICE_UUID,
-                "success_url": "https://example.com/success",
-                "cancel_url": "https://example.com/cancel",
-            }
-        )
-        ser.is_valid()
-        assert ser.validated_data["promo_code"] is None
 
     def test_allowed_host_wildcard_excluded(self, settings):
         settings.CORS_ALLOW_ALL_ORIGINS = False
@@ -282,16 +269,6 @@ class TestUpdateSubscriptionSerializer:
         assert ser.validated_data["plan_price_id"] == UUID(_PLAN_PRICE_UUID)
         assert ser.validated_data["quantity"] == 3
         assert ser.validated_data["prorate"] is False
-
-
-class TestPromoCodeSerializer:
-    def test_valid(self):
-        ser = PromoCodeSerializer(data={"promo_code": "SAVE20"})
-        assert ser.is_valid(), ser.errors
-
-    def test_missing(self):
-        ser = PromoCodeSerializer(data={})
-        assert not ser.is_valid()
 
 
 @pytest.mark.django_db

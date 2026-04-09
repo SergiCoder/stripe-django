@@ -80,7 +80,6 @@ The following suppressions are intentional and should not be removed. They stem 
 - `# type: ignore[no-untyped-call]` — `Webhook.construct_event`, `SignatureVerificationError` missing return annotations.
 - `# type: ignore[arg-type]` — stub overloads don't match actual API signatures (`locale`, `**params`).
 - `# type: ignore[return-value]` — `session.url` typed as `str | None` but always `str` for hosted checkout.
-- `# type: ignore[attr-defined]` — `promotion_code.coupon` missing from stubs.
 
 ### Celery
 

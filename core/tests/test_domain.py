@@ -298,8 +298,6 @@ def test_subscription_creation() -> None:
         created_at=NOW,
     )
     assert sub.quantity == 1
-    assert sub.promotion_code_id is None
-    assert sub.discount_percent is None
     assert sub.trial_ends_at is None
     assert sub.canceled_at is None
 

@@ -12,7 +12,6 @@ from saasmint_core.domain.stripe_customer import StripeCustomer
 from saasmint_core.exceptions import SubscriptionNotFoundError
 from saasmint_core.repositories.customer import StripeCustomerRepository
 from saasmint_core.repositories.subscription import SubscriptionRepository
-from saasmint_core.services.coupons import validate_promo_code
 
 
 async def get_or_create_customer(
@@ -67,7 +66,6 @@ async def create_checkout_session(
     price_id: str,
     client_reference_id: str,
     quantity: int = 1,
-    promo_code: str | None = None,
     locale: str = "en",
     success_url: str,
     cancel_url: str,
@@ -91,12 +89,7 @@ async def create_checkout_session(
         "cancel_url": cancel_url,
     }
 
-    if promo_code is not None:
-        promo = await validate_promo_code(promo_code)
-        params["discounts"] = [{"promotion_code": promo.id}]
-        params["allow_promotion_codes"] = False
-    else:
-        params["allow_promotion_codes"] = True
+    params["allow_promotion_codes"] = True
 
     if subscription_data:
         params["subscription_data"] = subscription_data

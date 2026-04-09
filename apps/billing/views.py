@@ -27,7 +27,6 @@ from saasmint_core.services.billing import (
     resume_subscription,
 )
 from saasmint_core.services.subscriptions import (
-    apply_promo_code,
     change_plan,
     update_seat_count,
 )
@@ -45,7 +44,6 @@ from apps.billing.serializers import (
     PlanSerializer,
     PortalRequestSerializer,
     ProductSerializer,
-    PromoCodeSerializer,
     SubscriptionSerializer,
     UpdateSubscriptionSerializer,
 )
@@ -73,7 +71,7 @@ async def _get_customer_and_paid_subscription(
 ) -> tuple[StripeCustomer, Subscription, str]:
     """Fetch the Stripe customer, active *paid* subscription, and its stripe_id.
 
-    Free-plan (local) subscriptions are excluded because PATCH/DELETE/promo
+    Free-plan (local) subscriptions are excluded because PATCH/DELETE
     operations require a real Stripe subscription. Returning ``stripe_sub_id``
     as a non-optional ``str`` lets callers avoid re-checking for ``None``.
     Raises NotFound when the customer or paid sub is missing.
@@ -179,7 +177,6 @@ class CheckoutSessionView(APIView):
                 client_reference_id=str(user.id),
                 price_id=plan_price.stripe_price_id,
                 quantity=quantity,
-                promo_code=data["promo_code"],
                 locale=user.preferred_locale,
                 success_url=data["success_url"],
                 cancel_url=data["cancel_url"],
@@ -310,29 +307,6 @@ class SubscriptionView(APIView):
                 stripe_customer_id=customer.id,
                 at_period_end=True,
                 subscription_repo=_subscription_repo,
-            )
-
-        async_to_sync(_do)()
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
-
-class ApplyPromoCodeView(APIView):
-    """POST /api/v1/billing/subscription/promo-code — apply a promo code."""
-
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "billing"
-
-    @extend_schema(request=PromoCodeSerializer, responses={204: None}, tags=["billing"])
-    def post(self, request: Request) -> Response:
-        user = get_user(request)
-        ser = PromoCodeSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-
-        async def _do() -> None:
-            _, _, stripe_sub_id = await _get_customer_and_paid_subscription(user.id)
-            await apply_promo_code(
-                stripe_subscription_id=stripe_sub_id,
-                promo_code=ser.validated_data["promo_code"],
             )
 
         async_to_sync(_do)()
