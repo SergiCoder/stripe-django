@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
@@ -96,8 +97,6 @@ class RefreshToken(models.Model):
 
     @property
     def is_valid(self) -> bool:
-        from datetime import UTC, datetime
-
         return self.revoked_at is None and self.expires_at > datetime.now(UTC)
 
 

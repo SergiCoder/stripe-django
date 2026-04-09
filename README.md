@@ -5,7 +5,7 @@ A production-ready Django backend for building SaaS applications with Stripe bil
 ## What you get
 
 - **Stripe integration** — subscriptions, one-time payments, customer portal, and webhook handling
-- **Django backend** — authentication, user management, and admin panel
+- **Django backend** — native JWT auth (email/password + OAuth), user management, and admin panel
 - **Admin dashboard** — extended Django admin with subscription status, Stripe event log, and user impersonation via django-hijack
 - **Webhook processing** — idempotent event handling with database-backed deduplication
 - **Organisations** — multi-tenant orgs with role-based membership (owner, admin, member)
@@ -91,6 +91,15 @@ Links to Swagger and ReDoc also appear in the Django admin header (debug only).
 | `CORS_ALLOW_ALL_ORIGINS` | Set to `True` to allow all CORS origins (dev only) |
 | `CSRF_TRUSTED_ORIGINS` | JSON array of trusted origins for CSRF (e.g. `["https://localhost:8443"]`) |
 | `DJANGO_SETTINGS_MODULE` | Python dotted path to the Django settings module (e.g. `config.settings.dev`) |
+| `RESEND_API_KEY` | [Resend](https://resend.com) API key for transactional email (verification, password reset) |
+| `EMAIL_FROM_ADDRESS` | Sender address for outbound email (defaults to `noreply@saasmint.com`) |
+| `FRONTEND_URL` | Base URL of the frontend app, used in email links (defaults to `http://localhost:3000`) |
+| `OAUTH_GOOGLE_CLIENT_ID` | Google OAuth 2.0 client ID (optional) |
+| `OAUTH_GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 client secret (optional) |
+| `OAUTH_GITHUB_CLIENT_ID` | GitHub OAuth app client ID (optional) |
+| `OAUTH_GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret (optional) |
+| `OAUTH_MICROSOFT_CLIENT_ID` | Microsoft OAuth app client ID (optional) |
+| `OAUTH_MICROSOFT_CLIENT_SECRET` | Microsoft OAuth app client secret (optional) |
 | `ENABLE_SESSION_AUTH` | Set to `True` to enable DRF browsable API session auth (dev only) |
 
 ## Project structure
@@ -125,6 +134,7 @@ saasmint-core/
 - **Python 3.12+** with Django
 - **PostgreSQL** as the database
 - **Stripe** for payments and billing
+- **Resend** for transactional email (verification, password reset)
 - **django-hijack** for admin user impersonation
 - **drf-spectacular** for OpenAPI schema, Swagger UI, and ReDoc
 - **Caddy** as local TLS reverse proxy

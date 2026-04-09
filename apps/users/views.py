@@ -150,7 +150,7 @@ _ALLOWED_AVATAR_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 def _delete_local_avatar(avatar_url: str | None) -> None:
     """Remove a locally-stored avatar file if it exists."""
     if avatar_url and avatar_url.startswith(settings.MEDIA_URL):
-        old_path = avatar_url.replace(settings.MEDIA_URL, "", 1)
+        old_path = avatar_url.removeprefix(settings.MEDIA_URL)
         if default_storage.exists(old_path):
             default_storage.delete(old_path)
 
@@ -188,7 +188,7 @@ class AvatarView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if file.size and file.size > _MAX_AVATAR_SIZE:
+        if file.size is not None and file.size > _MAX_AVATAR_SIZE:
             return Response(
                 {"detail": "File too large (max 5 MB).", "code": "file_too_large"},
                 status=status.HTTP_400_BAD_REQUEST,

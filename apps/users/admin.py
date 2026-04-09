@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import Any, ClassVar
 from zoneinfo import available_timezones
 
 from django import forms
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.contrib.auth.forms import UserChangeForm as BaseUserChangeForm
-from django.http import HttpRequest
 from django.utils.safestring import SafeString, mark_safe
 from saasmint_core.services.currency import SUPPORTED_CURRENCIES
 from saasmint_core.services.locale import SUPPORTED_LOCALES
@@ -88,10 +87,6 @@ class UserChangeForm(BaseUserChangeForm):  # type: ignore[type-arg]  # django-st
         }
 
 
-if TYPE_CHECKING:
-    from django.contrib.admin.options import _FieldsetSpec
-
-
 @admin.register(User)
 class UserAdmin(BaseUserAdmin):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
     form = UserChangeForm
@@ -110,13 +105,6 @@ class UserAdmin(BaseUserAdmin):  # type: ignore[type-arg]  # django-stubs generi
         "deleted_at",
         "scheduled_deletion_at",
     )
-
-    def get_fieldsets(
-        self,
-        request: HttpRequest,
-        obj: Any = None,  # noqa: ANN401
-    ) -> _FieldsetSpec:
-        return list(super().get_fieldsets(request, obj))
 
     fieldsets = (
         (None, {"fields": ("id", "email", "password")}),
