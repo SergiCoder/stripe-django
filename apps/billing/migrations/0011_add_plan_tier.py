@@ -17,7 +17,6 @@ def backfill_tier_from_name(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
         ("billing", "0010_add_subscription_user_status_index"),
     ]

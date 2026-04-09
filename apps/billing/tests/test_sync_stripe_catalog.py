@@ -49,9 +49,7 @@ def _existing_price(
     price.id = price_id
     price.unit_amount = unit_amount
     price.currency = currency
-    price.recurring = (
-        SimpleNamespace(interval=interval) if interval is not None else None
-    )
+    price.recurring = SimpleNamespace(interval=interval) if interval is not None else None
 
     product = MagicMock(spec=stripe.Product)
     product.id = product_id
@@ -133,16 +131,12 @@ def paid_plan_with_price():
         interval="month",
         is_active=True,
     )
-    price = PlanPrice.objects.create(
-        plan=plan, stripe_price_id="price_old_local", amount=1900
-    )
+    price = PlanPrice.objects.create(plan=plan, stripe_price_id="price_old_local", amount=1900)
     return plan, price
 
 
 class TestSyncPlans:
-    def test_creates_new_stripe_product_and_price_when_none_exists(
-        self, paid_plan_with_price
-    ):
+    def test_creates_new_stripe_product_and_price_when_none_exists(self, paid_plan_with_price):
         plan, price = paid_plan_with_price
 
         new_price = MagicMock(id="price_new_stripe")
@@ -216,9 +210,7 @@ class TestSyncPlans:
         price.refresh_from_db()
         assert price.stripe_price_id == "price_already_synced"
 
-    def test_amount_drift_archives_old_price_and_creates_new(
-        self, paid_plan_with_price
-    ):
+    def test_amount_drift_archives_old_price_and_creates_new(self, paid_plan_with_price):
         plan, price = paid_plan_with_price
         existing = _existing_price(
             price_id="price_stale",
@@ -248,9 +240,7 @@ class TestSyncPlans:
         price.refresh_from_db()
         assert price.stripe_price_id == "price_new_after_drift"
 
-    def test_existing_product_metadata_drift_triggers_modify(
-        self, paid_plan_with_price
-    ):
+    def test_existing_product_metadata_drift_triggers_modify(self, paid_plan_with_price):
         plan, _price = paid_plan_with_price
         # Existing matches amount/interval but product metadata is empty
         existing = _existing_price(
@@ -368,9 +358,7 @@ class TestSyncProducts:
         price.refresh_from_db()
         assert price.stripe_price_id == "price_new_credits"
 
-    def test_recurring_drift_from_one_time_to_recurring_archives(
-        self, product_with_price
-    ):
+    def test_recurring_drift_from_one_time_to_recurring_archives(self, product_with_price):
         """Existing price has recurring set, but local product is one-time → mismatch."""
         _, price = product_with_price
         existing = _existing_price(
@@ -416,9 +404,7 @@ class TestSyncProducts:
         product = Product.objects.create(
             name="Old Pack", type="one_time", credits=10, is_active=False
         )
-        ProductPrice.objects.create(
-            product=product, stripe_price_id="price_old", amount=99
-        )
+        ProductPrice.objects.create(product=product, stripe_price_id="price_old", amount=99)
         with (
             patch("stripe.Price.list") as mock_list,
             patch("stripe.Price.create") as mock_create,
@@ -428,9 +414,7 @@ class TestSyncProducts:
         mock_create.assert_not_called()
 
     def test_skips_product_without_price_row(self):
-        Product.objects.create(
-            name="No Price Yet", type="one_time", credits=50, is_active=True
-        )
+        Product.objects.create(name="No Price Yet", type="one_time", credits=50, is_active=True)
         with (
             patch("stripe.Price.list") as mock_list,
             patch("stripe.Price.create") as mock_create,

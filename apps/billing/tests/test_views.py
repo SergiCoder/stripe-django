@@ -355,9 +355,7 @@ class TestUpdateSubscription:
         mock_seats.assert_called_once()
 
     @patch("apps.billing.views.update_seat_count", new_callable=AsyncMock)
-    def test_seats_only_rejected_on_personal_plan(
-        self, mock_seats, authed_client, subscription
-    ):
+    def test_seats_only_rejected_on_personal_plan(self, mock_seats, authed_client, subscription):
         """Personal plans must not accept multi-seat updates via the seat-only path."""
         resp = authed_client.patch(
             "/api/v1/billing/subscription/",
@@ -448,9 +446,7 @@ class TestUpdateSubscription:
         assert mock_change.call_args.kwargs["prorate"] is False
 
     @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
-    def test_cancel_at_period_end_true_calls_cancel(
-        self, mock_cancel, authed_client, subscription
-    ):
+    def test_cancel_at_period_end_true_calls_cancel(self, mock_cancel, authed_client, subscription):
         resp = authed_client.patch(
             "/api/v1/billing/subscription/",
             {"cancel_at_period_end": True},

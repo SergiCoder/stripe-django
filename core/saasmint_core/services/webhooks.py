@@ -164,9 +164,7 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
     period_start = first_item.get("current_period_start", sub_data.get("current_period_start"))
     period_end = first_item.get("current_period_end", sub_data.get("current_period_end"))
     if period_start is None or period_end is None:
-        raise WebhookDataError(
-            f"Subscription {stripe_sub_id} missing current_period_start/end"
-        )
+        raise WebhookDataError(f"Subscription {stripe_sub_id} missing current_period_start/end")
 
     customer, plan_price, existing = await asyncio.gather(
         repos.customers.get_by_stripe_id(stripe_customer_str),

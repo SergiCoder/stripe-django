@@ -150,8 +150,7 @@ class UpdateSubscriptionSerializer(serializers.Serializer[object]):
         # Clients should send two requests instead.
         if has_cancel_toggle and has_plan_change:
             raise serializers.ValidationError(
-                "'cancel_at_period_end' cannot be combined with 'plan_price_id' "
-                "or 'quantity'."
+                "'cancel_at_period_end' cannot be combined with 'plan_price_id' or 'quantity'."
             )
         return attrs
 

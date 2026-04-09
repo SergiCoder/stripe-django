@@ -25,7 +25,9 @@ class DeletionStateFilter(admin.SimpleListFilter):
     parameter_name = "deletion_state"
 
     def lookups(
-        self, request: HttpRequest, model_admin: admin.ModelAdmin  # type: ignore[type-arg]
+        self,
+        request: HttpRequest,
+        model_admin: admin.ModelAdmin,  # type: ignore[type-arg]
     ) -> list[tuple[str, str]]:
         return [
             ("active", "Active (not deleted)"),

@@ -270,9 +270,7 @@ class TestUpdateSubscriptionSerializer:
         assert not ser.is_valid()
 
     def test_cancel_at_period_end_with_quantity_rejected(self):
-        ser = UpdateSubscriptionSerializer(
-            data={"quantity": 3, "cancel_at_period_end": False}
-        )
+        ser = UpdateSubscriptionSerializer(data={"quantity": 3, "cancel_at_period_end": False})
         assert not ser.is_valid()
 
     def test_both_fields_preserves_values(self):
