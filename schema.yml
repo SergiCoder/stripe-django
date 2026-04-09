@@ -85,7 +85,7 @@ paths:
       - JWT: []
       - cookieAuth: []
       responses:
-        '200':
+        '201':
           content:
             application/json:
               schema:
@@ -395,7 +395,8 @@ paths:
   /api/v1/billing/plans/:
     get:
       operationId: billing_plans_list
-      description: GET /api/v1/billing/plans — list active plans with prices (public).
+      description: List all active plans with prices. Not paginated — the catalog
+        is bounded to a small number of plans.
       tags:
       - billing
       security:
@@ -443,8 +444,8 @@ paths:
   /api/v1/billing/products/:
     get:
       operationId: billing_products_list
-      description: GET /api/v1/billing/products — list active one-time products with
-        prices.
+      description: List all active one-time products with prices. Not paginated —
+        the catalog is bounded to a small number of products.
       tags:
       - billing
       security:
@@ -1070,8 +1071,8 @@ components:
           format: uuid
           readOnly: true
         user:
-          type: string
-          format: uuid
+          allOf:
+          - $ref: '#/components/schemas/_MemberUser'
           readOnly: true
         role:
           allOf:
@@ -1580,6 +1581,29 @@ components:
           format: binary
       required:
       - avatar
+    _MemberUser:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        email:
+          type: string
+          format: email
+          readOnly: true
+        full_name:
+          type: string
+          readOnly: true
+        avatar_url:
+          type: string
+          readOnly: true
+          nullable: true
+      required:
+      - avatar_url
+      - email
+      - full_name
+      - id
     _PhoneRead:
       type: object
       properties:
