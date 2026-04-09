@@ -17,7 +17,10 @@ COPY apps /app/apps
 COPY middleware /app/middleware
 COPY manage.py /app/
 
-RUN addgroup --system app && adduser --system --ingroup app app && chown -R app:app /opt/venv /tmp/uv-cache
+RUN mkdir -p /app/media \
+    && addgroup --system --gid 1000 app \
+    && adduser --system --uid 1000 --ingroup app app \
+    && chown -R app:app /opt/venv /tmp/uv-cache /app/media
 USER app
 
 ENV DJANGO_PORT=8001

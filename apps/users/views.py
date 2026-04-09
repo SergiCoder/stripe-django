@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
@@ -12,8 +13,10 @@ if TYPE_CHECKING:
 
 from asgiref.sync import async_to_sync
 from django.conf import settings
+from django.core.files.storage import default_storage
 from drf_spectacular.utils import extend_schema
-from rest_framework import status
+from rest_framework import serializers, status
+from rest_framework.parsers import MultiPartParser
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
@@ -92,8 +95,6 @@ class AccountView(APIView):
             user_repo=_user_repo,
             customer_repo=customer_repo,
             subscription_repo=subscription_repo,
-            supabase_url=settings.SUPABASE_URL,
-            service_role_key=settings.SUPABASE_JWT_SECRET,
         )
         if scheduled_at is not None:
             return Response(
@@ -140,3 +141,82 @@ class AccountExportView(APIView):
             subscription_repo=subscription_repo,
         )
         return Response(data)
+
+
+_MAX_AVATAR_SIZE = 5 * 1024 * 1024  # 5 MB
+_ALLOWED_AVATAR_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+
+
+def _delete_local_avatar(avatar_url: str | None) -> None:
+    """Remove a locally-stored avatar file if it exists."""
+    if avatar_url and avatar_url.startswith(settings.MEDIA_URL):
+        old_path = avatar_url.removeprefix(settings.MEDIA_URL)
+        if default_storage.exists(old_path):
+            default_storage.delete(old_path)
+
+
+class _AvatarUploadSerializer(serializers.Serializer["_AvatarUploadSerializer"]):
+    avatar = serializers.ImageField()
+
+
+class AvatarView(APIView):
+    """POST/DELETE /api/v1/account/avatar/ — upload or delete avatar."""
+
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
+    throttle_scope = "account"
+    parser_classes: ClassVar[list[type[MultiPartParser]]] = [MultiPartParser]  # type: ignore[misc]
+
+    @extend_schema(
+        request=_AvatarUploadSerializer,
+        responses={201: dict},
+        tags=["account"],
+    )
+    def post(self, request: Request) -> Response:
+        """Upload avatar (multipart), return { avatar_url }."""
+        user = get_user(request)
+
+        file = request.FILES.get("avatar")
+        if file is None:
+            return Response(
+                {"detail": "No file provided.", "code": "missing_file"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if file.content_type not in _ALLOWED_AVATAR_TYPES:
+            return Response(
+                {"detail": "Unsupported image type.", "code": "invalid_type"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if file.size is not None and file.size > _MAX_AVATAR_SIZE:
+            return Response(
+                {"detail": "File too large (max 5 MB).", "code": "file_too_large"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        _delete_local_avatar(user.avatar_url)
+
+        ext = file.name.rsplit(".", 1)[-1] if "." in file.name else "jpg"
+        path = f"avatars/{user.id}/{uuid.uuid4().hex}.{ext}"
+        saved_path = default_storage.save(path, file)
+        avatar_url = request.build_absolute_uri(f"{settings.MEDIA_URL}{saved_path}")
+
+        user.avatar_url = avatar_url
+        user.save(update_fields=["avatar_url", "updated_at"])
+
+        return Response(
+            {"avatar_url": avatar_url},
+            status=status.HTTP_201_CREATED,
+            headers={"Location": avatar_url},
+        )
+
+    @extend_schema(responses={204: None}, tags=["account"])
+    def delete(self, request: Request) -> Response:
+        """Delete avatar."""
+        user = get_user(request)
+
+        _delete_local_avatar(user.avatar_url)
+
+        user.avatar_url = None
+        user.save(update_fields=["avatar_url", "updated_at"])
+        return Response(status=status.HTTP_204_NO_CONTENT)

@@ -16,7 +16,6 @@ from saasmint_core.exceptions import UserNotFoundError
 from saasmint_core.repositories.customer import StripeCustomerRepository
 from saasmint_core.repositories.subscription import SubscriptionRepository
 from saasmint_core.repositories.user import UserRepository
-from saasmint_core.services.supabase_admin import delete_supabase_avatar, delete_supabase_user
 
 
 async def _stripe_request(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
@@ -49,8 +48,6 @@ async def request_account_deletion(
     user_repo: UserRepository,
     customer_repo: StripeCustomerRepository,
     subscription_repo: SubscriptionRepository,
-    supabase_url: str,
-    service_role_key: str,
 ) -> datetime | None:
     """
     Request GDPR right-to-erasure account deletion.
@@ -67,7 +64,7 @@ async def request_account_deletion(
     # "no subscription" so the account is deleted immediately.
     if active_sub and not active_sub.is_free:
         # Cancel renewal, schedule deletion for period end.
-        # 2025-03-31.basil: `cancel_at_period_end=True` → `cancel_at="min_period_end"`.
+        # 2026-03-25.dahlia: `cancel_at_period_end=True` → `cancel_at="min_period_end"`.
         await _stripe_request(
             stripe.Subscription.modify,
             active_sub.stripe_id,
@@ -84,8 +81,6 @@ async def request_account_deletion(
         user_repo=user_repo,
         customer_repo=customer_repo,
         subscription_repo=subscription_repo,
-        supabase_url=supabase_url,
-        service_role_key=service_role_key,
     )
     return None
 
@@ -96,8 +91,6 @@ async def execute_account_deletion(
     user_repo: UserRepository,
     customer_repo: StripeCustomerRepository,
     subscription_repo: SubscriptionRepository,
-    supabase_url: str,
-    service_role_key: str,
 ) -> None:
     """
     Execute GDPR right-to-erasure — permanently remove all user data.
@@ -109,10 +102,9 @@ async def execute_account_deletion(
     1. Cancel any active Stripe subscription immediately.
     2. Delete the Stripe Customer object (removes stored payment methods).
     3. Delete our StripeCustomer record.
-    4. Delete the Supabase avatar and Auth user (in parallel).
-    5. Hard-delete the user row (cascades to OrgMember, etc.).
+    4. Hard-delete the user row (cascades to OrgMember, etc.).
     """
-    user, customer = await _load_user_and_customer(user_id, user_repo, customer_repo)
+    _user, customer = await _load_user_and_customer(user_id, user_repo, customer_repo)
 
     # Cancel any paid Stripe subscription
     active_sub = await subscription_repo.get_active_for_user(user_id)
@@ -122,19 +114,6 @@ async def execute_account_deletion(
     if customer:
         await _stripe_request(stripe.Customer.delete, customer.stripe_id)
         await customer_repo.delete(customer.id)
-
-    await asyncio.gather(
-        delete_supabase_avatar(
-            supabase_url=supabase_url,
-            service_role_key=service_role_key,
-            avatar_url=user.avatar_url,
-        ),
-        delete_supabase_user(
-            supabase_url=supabase_url,
-            service_role_key=service_role_key,
-            supabase_uid=user.supabase_uid,
-        ),
-    )
 
     await user_repo.hard_delete(user_id)
 
@@ -157,7 +136,7 @@ async def cancel_account_deletion(
         return
 
     # Re-enable subscription renewal (skip free subscriptions).
-    # 2025-03-31.basil: clear a scheduled cancellation by passing `cancel_at=""`.
+    # 2026-03-25.dahlia: clear a scheduled cancellation by passing `cancel_at=""`.
     active_sub = await subscription_repo.get_active_for_user(user_id)
     if active_sub and not active_sub.is_free:
         await _stripe_request(

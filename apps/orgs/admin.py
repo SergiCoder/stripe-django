@@ -6,7 +6,7 @@ from apps.orgs.models import Org, OrgMember
 
 
 @admin.register(Org)
-class OrgAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic; no type param needed at runtime
+class OrgAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
     list_display = ("name", "slug", "created_by", "created_at", "deleted_at")
     list_filter = ("deleted_at",)
     search_fields = ("name", "slug")
@@ -15,7 +15,7 @@ class OrgAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs Mode
 
 
 @admin.register(OrgMember)
-class OrgMemberAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic; no type param needed at runtime
+class OrgMemberAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
     list_display = ("org", "user", "role", "is_billing", "joined_at")
     list_filter = ("role", "is_billing")
     search_fields = ("org__name", "user__email")

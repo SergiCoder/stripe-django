@@ -49,16 +49,22 @@ class DashboardView(TemplateView):
         user = await request.auser()
         if not user.is_authenticated:
             return HttpResponseRedirect(f"{settings.LOGIN_URL}?next={request.path}")
-        plan_repo = DjangoPlanRepository()
         # Independent fetches — run concurrently to cut round-trip latency.
         subscription, plans, products, org_memberships = await asyncio.gather(
             DjangoSubscriptionRepository().get_active_for_user(user.id),
-            plan_repo.list_active(),
+            DjangoPlanRepository().list_active(),
             DjangoProductRepository().list_active(),
             _get_org_memberships(user),
         )
+        # Look up the subscription's plan from the already-fetched list to avoid
+        # an extra DB round-trip.
         plan = (
-            await plan_repo.get_by_id(subscription.plan_id) if subscription is not None else None
+            next(
+                (p for p in plans if p.id == subscription.plan_id),
+                None,
+            )
+            if subscription is not None
+            else None
         )
         ctx = self.get_context_data(
             subscription=subscription,

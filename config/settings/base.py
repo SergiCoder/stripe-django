@@ -34,9 +34,6 @@ class _Env(BaseSettings):
     django_secret_key: str
     stripe_secret_key: str
     stripe_webhook_secret: str
-    supabase_url: str = ""
-    supabase_anon_key: str = ""
-    supabase_jwt_secret: str
     redis_url: str = "redis://localhost:6379/0"
     database_url: str = "postgresql://localhost:5432/saasmint"
     debug: bool = False
@@ -44,6 +41,15 @@ class _Env(BaseSettings):
     cors_allowed_origins: list[str] = []
     cors_allow_all_origins: bool = False
     csrf_trusted_origins: list[str] = []
+    resend_api_key: str = ""
+    frontend_url: str = "http://localhost:3000"
+    email_from_address: str = "noreply@saasmint.com"
+    oauth_google_client_id: str = ""
+    oauth_google_client_secret: str = ""
+    oauth_github_client_id: str = ""
+    oauth_github_client_secret: str = ""
+    oauth_microsoft_client_id: str = ""
+    oauth_microsoft_client_secret: str = ""
     enable_session_auth: bool = False  # dev-only: allows browsable API via Django session
 
 
@@ -141,7 +147,10 @@ STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_DIRS = [BASE_DIR / "static"]
 
-_auth_classes = ["apps.users.authentication.SupabaseJWTAuthentication"]
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
+
+_auth_classes = ["apps.users.authentication.JWTAuthentication"]
 if env.enable_session_auth:
     _auth_classes.append("rest_framework.authentication.SessionAuthentication")
 
@@ -208,10 +217,18 @@ CELERY_BEAT_SCHEDULE = {
 STRIPE_SECRET_KEY = env.stripe_secret_key
 STRIPE_WEBHOOK_SECRET = env.stripe_webhook_secret
 
-# Supabase
-SUPABASE_URL = env.supabase_url
-SUPABASE_ANON_KEY = env.supabase_anon_key
-SUPABASE_JWT_SECRET = env.supabase_jwt_secret
+# Email (Resend)
+RESEND_API_KEY = env.resend_api_key
+EMAIL_FROM_ADDRESS = env.email_from_address
+FRONTEND_URL = env.frontend_url
+
+# OAuth
+OAUTH_GOOGLE_CLIENT_ID = env.oauth_google_client_id
+OAUTH_GOOGLE_CLIENT_SECRET = env.oauth_google_client_secret
+OAUTH_GITHUB_CLIENT_ID = env.oauth_github_client_id
+OAUTH_GITHUB_CLIENT_SECRET = env.oauth_github_client_secret
+OAUTH_MICROSOFT_CLIENT_ID = env.oauth_microsoft_client_id
+OAUTH_MICROSOFT_CLIENT_SECRET = env.oauth_microsoft_client_secret
 
 # django-hijack
 HIJACK_REGISTER_ADMIN_ACTIONS = True

@@ -5,6 +5,7 @@ from __future__ import annotations
 import secrets
 import string
 from datetime import UTC, datetime, timedelta
+from typing import NotRequired, TypedDict
 
 from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandParser
@@ -23,15 +24,41 @@ from apps.billing.models import (
 from apps.orgs.models import Org, OrgMember, OrgRole
 from apps.users.models import AccountType, User
 
+
+class _PersonalUserSpec(TypedDict):
+    email: str
+    full_name: str
+    preferred_locale: str
+    preferred_currency: str
+    stripe_id: str
+    sub_stripe_id: str
+    plan_key: str
+    sub_status: SubscriptionStatus
+    trial_days_from_now: NotRequired[int]
+    canceled_days_ago: NotRequired[int]
+
+
+class _OrgSpec(TypedDict):
+    name: str
+    slug: str
+    stripe_id: str
+    sub_stripe_id: str
+    plan_key: str
+    sub_status: SubscriptionStatus
+    seats: int
+    owner_email: str
+    members: NotRequired[list[tuple[str, OrgRole]]]
+    trial_days_from_now: NotRequired[int]
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-PERSONAL_USERS = [
+PERSONAL_USERS: list[_PersonalUserSpec] = [
     {
         "email": "jack.bauer@ctu.gov",
         "full_name": "Jack Bauer",
-        "supabase_uid": "sbuid_jack_bauer",
         "preferred_locale": "en",
         "preferred_currency": "usd",
         "stripe_id": "cus_dev_jack_bauer",
@@ -42,7 +69,6 @@ PERSONAL_USERS = [
     {
         "email": "luke.hobbs@dss.gov",
         "full_name": "Luke Hobbs",
-        "supabase_uid": "sbuid_luke_hobbs",
         "preferred_locale": "en",
         "preferred_currency": "usd",
         "stripe_id": "cus_dev_luke_hobbs",
@@ -53,7 +79,6 @@ PERSONAL_USERS = [
     {
         "email": "deckard.shaw@shaw-security.com",
         "full_name": "Deckard Shaw",
-        "supabase_uid": "sbuid_deckard_shaw",
         "preferred_locale": "en",
         "preferred_currency": "gbp",
         "stripe_id": "cus_dev_deckard_shaw",
@@ -65,7 +90,6 @@ PERSONAL_USERS = [
     {
         "email": "ethan.hunt@imf.gov",
         "full_name": "Ethan Hunt",
-        "supabase_uid": "sbuid_ethan_hunt",
         "preferred_locale": "en",
         "preferred_currency": "usd",
         "stripe_id": "cus_dev_ethan_hunt",
@@ -76,7 +100,6 @@ PERSONAL_USERS = [
     {
         "email": "james.bond@mi6.gov.uk",
         "full_name": "James Bond",
-        "supabase_uid": "sbuid_james_bond",
         "preferred_locale": "en",
         "preferred_currency": "gbp",
         "stripe_id": "cus_dev_james_bond",
@@ -87,7 +110,6 @@ PERSONAL_USERS = [
     {
         "email": "john.mcclane@nypd.gov",
         "full_name": "John McClane",
-        "supabase_uid": "sbuid_john_mcclane",
         "preferred_locale": "en",
         "preferred_currency": "usd",
         "stripe_id": "cus_dev_john_mcclane",
@@ -99,7 +121,6 @@ PERSONAL_USERS = [
     {
         "email": "jason.bourne@treadstone.com",
         "full_name": "Jason Bourne",
-        "supabase_uid": "sbuid_jason_bourne",
         "preferred_locale": "en",
         "preferred_currency": "eur",
         "stripe_id": "cus_dev_jason_bourne",
@@ -110,7 +131,6 @@ PERSONAL_USERS = [
     {
         "email": "bryan.mills@retired.com",
         "full_name": "Bryan Mills",
-        "supabase_uid": "sbuid_bryan_mills",
         "preferred_locale": "fr",
         "preferred_currency": "eur",
         "stripe_id": "cus_dev_bryan_mills",
@@ -122,7 +142,6 @@ PERSONAL_USERS = [
     {
         "email": "john.wick@continental.com",
         "full_name": "John Wick",
-        "supabase_uid": "sbuid_john_wick",
         "preferred_locale": "en",
         "preferred_currency": "usd",
         "stripe_id": "cus_dev_john_wick",
@@ -133,7 +152,6 @@ PERSONAL_USERS = [
     {
         "email": "dominic.toretto@teamtoretto.com",
         "full_name": "Dominic Toretto",
-        "supabase_uid": "sbuid_dom_toretto",
         "preferred_locale": "en",
         "preferred_currency": "usd",
         "stripe_id": "cus_dev_dom_toretto",
@@ -143,7 +161,7 @@ PERSONAL_USERS = [
     },
 ]
 
-ORGS = [
+ORGS: list[_OrgSpec] = [
     {
         "name": "Counter Terrorist Unit",
         "slug": "ctu",
@@ -408,7 +426,6 @@ class Command(BaseCommand):
             user, created = User.objects.get_or_create(
                 email=u["email"],
                 defaults={
-                    "supabase_uid": u["supabase_uid"],
                     "full_name": u["full_name"],
                     "account_type": AccountType.PERSONAL,
                     "preferred_locale": u["preferred_locale"],
@@ -427,24 +444,24 @@ class Command(BaseCommand):
 
         return user_map
 
-    def _seed_user_billing(self, user: User, u: dict[str, object], plans: dict[str, Plan]) -> None:
+    def _seed_user_billing(self, user: User, u: _PersonalUserSpec, plans: dict[str, Plan]) -> None:
         customer, _ = StripeCustomer.objects.get_or_create(
             stripe_id=u["stripe_id"],
             defaults={"user": user, "livemode": False},
         )
         self._seed_subscription(
-            stripe_id=u["sub_stripe_id"],  # type: ignore[arg-type]
+            stripe_id=u["sub_stripe_id"],
             customer=customer,
-            plan=plans[u["plan_key"]],  # type: ignore[index]
-            status=u["sub_status"],  # type: ignore[arg-type]
+            plan=plans[u["plan_key"]],
+            status=u["sub_status"],
             quantity=1,
-            trial_days=u.get("trial_days_from_now"),  # type: ignore[arg-type]
-            canceled_days_ago=u.get("canceled_days_ago"),  # type: ignore[arg-type]
+            trial_days=u.get("trial_days_from_now"),
+            canceled_days_ago=u.get("canceled_days_ago"),
         )
 
     def _seed_orgs(self, plans: dict[str, Plan], users: dict[str, User]) -> None:
         for o in ORGS:
-            owner = users[o["owner_email"]]  # type: ignore[index]
+            owner = users[o["owner_email"]]
             org, created = Org.objects.get_or_create(
                 slug=o["slug"],
                 defaults={"name": o["name"], "created_by": owner},
@@ -459,7 +476,7 @@ class Command(BaseCommand):
         self,
         org: Org,
         owner: User,
-        o: dict[str, object],
+        o: _OrgSpec,
         users: dict[str, User],
     ) -> None:
         OrgMember.objects.get_or_create(
@@ -467,7 +484,7 @@ class Command(BaseCommand):
             user=owner,
             defaults={"role": OrgRole.OWNER, "is_billing": True},
         )
-        for member_email, role in o.get("members", []):  # type: ignore[misc]
+        for member_email, role in o.get("members", []):
             member_user = users.get(member_email)
             if member_user:
                 OrgMember.objects.get_or_create(
@@ -476,18 +493,18 @@ class Command(BaseCommand):
                     defaults={"role": role, "is_billing": False},
                 )
 
-    def _seed_org_billing(self, org: Org, o: dict[str, object], plans: dict[str, Plan]) -> None:
+    def _seed_org_billing(self, org: Org, o: _OrgSpec, plans: dict[str, Plan]) -> None:
         customer, _ = StripeCustomer.objects.get_or_create(
             stripe_id=o["stripe_id"],
             defaults={"org": org, "livemode": False},
         )
         self._seed_subscription(
-            stripe_id=o["sub_stripe_id"],  # type: ignore[arg-type]
+            stripe_id=o["sub_stripe_id"],
             customer=customer,
-            plan=plans[o["plan_key"]],  # type: ignore[index]
-            status=o["sub_status"],  # type: ignore[arg-type]
-            quantity=o["seats"],  # type: ignore[arg-type]
-            trial_days=o.get("trial_days_from_now"),  # type: ignore[arg-type]
+            plan=plans[o["plan_key"]],
+            status=o["sub_status"],
+            quantity=o["seats"],
+            trial_days=o.get("trial_days_from_now"),
         )
 
     def _seed_subscription(

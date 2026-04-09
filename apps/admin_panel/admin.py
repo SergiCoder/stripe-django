@@ -1,4 +1,7 @@
-"""Extended Django admin — re-registers User with subscription status column and sets site_url to /dashboard/."""  # noqa: E501
+"""Extended Django admin.
+
+Re-registers User with subscription status column and sets site_url to /dashboard/.
+"""
 
 from typing import ClassVar
 
@@ -27,7 +30,7 @@ class DeletionStateFilter(admin.SimpleListFilter):
     def lookups(
         self,
         request: HttpRequest,
-        model_admin: admin.ModelAdmin,  # type: ignore[type-arg]
+        model_admin: admin.ModelAdmin,  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
     ) -> list[tuple[str, str]]:
         return [
             ("active", "Active (not deleted)"),
@@ -47,7 +50,7 @@ class DeletionStateFilter(admin.SimpleListFilter):
 
 
 @admin.register(User)
-class UserAdminExtended(UserAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic but UserAdmin inherits from BaseUserAdmin which doesn't declare its type parameter
+class UserAdminExtended(UserAdmin):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
     list_display = (
         "email",
         "full_name",
@@ -62,13 +65,14 @@ class UserAdminExtended(UserAdmin):  # type: ignore[type-arg]  # django-stubs Mo
     list_filter: ClassVar[tuple[object, ...]] = (
         DeletionStateFilter,
         "account_type",
+        "registration_method",
         "is_active",
         "is_staff",
         "is_verified",
     )
 
     def get_queryset(self, request: HttpRequest) -> QuerySet[User]:
-        qs = super().get_queryset(request)  # type: ignore[misc]  # django-stubs types get_queryset as returning QuerySet[Any]; we narrow to QuerySet[User]
+        qs = super().get_queryset(request)  # type: ignore[misc]  # django-stubs returns QuerySet[Any]; narrowing to QuerySet[User]
         customer_sub = Subscription.objects.filter(
             Q(user=OuterRef("pk")) | Q(stripe_customer__user=OuterRef("pk")),
             status__in=ACTIVE_SUBSCRIPTION_STATUSES,

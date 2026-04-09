@@ -7,6 +7,7 @@ from uuid import UUID
 
 from django.db import IntegrityError, transaction
 from django.shortcuts import get_object_or_404
+from django.urls import reverse
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status
@@ -105,7 +106,12 @@ class OrgListCreateView(APIView):
                 )
         except IntegrityError:
             raise ValidationError({"slug": ["An org with this slug already exists."]}) from None
-        return Response(OrgSerializer(org).data, status=status.HTTP_201_CREATED)
+        location = request.build_absolute_uri(reverse("org-detail", kwargs={"org_id": org.id}))
+        return Response(
+            OrgSerializer(org).data,
+            status=status.HTTP_201_CREATED,
+            headers={"Location": location},
+        )
 
 
 class OrgDetailView(APIView):
@@ -193,7 +199,15 @@ class OrgMemberListView(APIView):
             },
         )
         code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
-        return Response(OrgMemberSerializer(member).data, status=code)
+        headers = {}
+        if created:
+            headers["Location"] = request.build_absolute_uri(
+                reverse(
+                    "org-member-detail",
+                    kwargs={"org_id": org.id, "member_user_id": target_user.id},
+                )
+            )
+        return Response(OrgMemberSerializer(member).data, status=code, headers=headers)
 
 
 class OrgMemberDetailView(APIView):

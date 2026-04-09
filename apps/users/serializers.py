@@ -16,6 +16,7 @@ class _PhoneReadSerializer(serializers.Serializer[User]):
 
 class UserSerializer(serializers.ModelSerializer[User]):
     phone = _PhoneReadSerializer(source="*", read_only=True, allow_null=True)
+    linked_providers = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -33,11 +34,16 @@ class UserSerializer(serializers.ModelSerializer[User]):
             "pronouns",
             "bio",
             "is_verified",
+            "registration_method",
+            "linked_providers",
             "created_at",
             "updated_at",
             "scheduled_deletion_at",
         )
         read_only_fields = fields
+
+    def get_linked_providers(self, obj: User) -> list[str]:
+        return list(obj.social_accounts.values_list("provider", flat=True))
 
     def to_representation(self, instance: User) -> dict[str, Any]:
         data = super().to_representation(instance)
@@ -48,7 +54,7 @@ class UserSerializer(serializers.ModelSerializer[User]):
 
 class _PhoneWriteSerializer(serializers.Serializer[User]):
     prefix = serializers.CharField(max_length=5, required=True)
-    number = serializers.CharField(max_length=15, required=True)
+    number = serializers.CharField(min_length=4, max_length=15, required=True)
 
     def validate_prefix(self, value: str) -> str:
         from saasmint_core.services.phone import SUPPORTED_PHONE_PREFIXES
@@ -63,7 +69,7 @@ class _PhoneWriteSerializer(serializers.Serializer[User]):
 
 class UpdateUserSerializer(serializers.Serializer[User]):
     full_name = serializers.CharField(min_length=3, max_length=255, required=False)
-    avatar_url = serializers.URLField(required=False, allow_null=True)
+    avatar_url = serializers.CharField(max_length=500, required=False, allow_null=True)
     preferred_locale = serializers.CharField(max_length=10, required=False)
     preferred_currency = serializers.CharField(max_length=3, required=False)
     phone = _PhoneWriteSerializer(required=False, allow_null=True)

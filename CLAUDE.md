@@ -9,7 +9,6 @@ Django 6 SaaS backend. Python 3.12, uv, PostgreSQL (testcontainers), Celery + Re
 - `config/` — Django settings (base/dev/test/prod), root urls, celery.
 - `middleware/` — custom middleware (security, etc).
 - Django apps implement repository interfaces from core and wire them to DRF views/serializers.
-- Supabase: `SUPABASE_JWT_SECRET` is used both for JWT verification and as the service role key for Admin API calls. Do not add a separate `SUPABASE_SERVICE_ROLE_KEY` setting.
 
 ## Billing model
 
@@ -20,7 +19,7 @@ Django 6 SaaS backend. Python 3.12, uv, PostgreSQL (testcontainers), Celery + Re
   - Free: `stripe_id IS NULL`, `user_id` set directly. Created on signup (`apps.billing.services.assign_free_plan`) and on personal subscription cancellation (auto-fallback in `_on_subscription_deleted`). `Subscription.is_free` distinguishes them.
 - `current_period_end` for free subs is the sentinel `FREE_SUBSCRIPTION_PERIOD_END` (year 9999) — they never renew.
 - `Product` / `ProductPrice` are one-time purchases (credit packs / Boost), separate from subscription plans.
-- Stripe API version is pinned to `2025-03-31.basil`. Notable: `cancel_at_period_end=True` is replaced by `cancel_at="min_period_end"` (clear with `cancel_at=""`); the singular `subscription.discount` is replaced by `discounts[]`; `current_period_start/end` live on subscription items, not the subscription itself.
+- Stripe API version is pinned to `2026-03-25.dahlia`. Notable: `cancel_at_period_end=True` is replaced by `cancel_at="min_period_end"` (clear with `cancel_at=""`); the singular `subscription.discount` is replaced by `discounts[]`; `current_period_start/end` live on subscription items, not the subscription itself.
 - `make sync-stripe` (runs `manage.py sync_stripe_catalog`) is the source of truth for pushing local Plans/Products into Stripe. It should run after every `migrate` in deploy pipelines so Stripe matches the DB; it is idempotent via Stripe `lookup_key`s.
 
 ## Prism commands
@@ -56,8 +55,51 @@ make lint        # ruff check
 make format      # ruff format
 make typecheck   # mypy
 make migrate     # run migrations (stack running)
+docker compose exec django uv run python manage.py spectacular --file schema.yml  # regenerate OpenAPI schema
 ```
+
+After modifying any endpoint (views, serializers, URL routes), regenerate `schema.yml` so the OpenAPI spec stays in sync.
 
 ## Code style
 
 - Always use type hints in Python.
+
+## Accepted type: ignore / noqa suppressions
+
+The following suppressions are intentional and should not be removed. They stem from upstream library limitations or deliberate design choices.
+
+### django-stubs / drf-stubs
+
+- `# type: ignore[type-arg]` on `admin.ModelAdmin`, `BaseUserAdmin`, `forms.ModelForm` — these are generic in django-stubs but **not subscriptable at runtime**. Django autodiscovers admin modules at import time, so `ModelAdmin[Model]` causes `TypeError`.
+- `# type: ignore[misc]` on `permission_classes`, `throttle_classes`, `parser_classes` — DRF stubs type these as instance vars; using `ClassVar` (required by RUF012) triggers mypy `misc`. A conflict between drf-stubs and mypy.
+- `# type: ignore[misc]` on `super().get_queryset()` in admin — django-stubs returns `QuerySet[Any]`; narrowing to `QuerySet[Model]` triggers `misc`.
+- `# type: ignore[no-untyped-call]` on drf-spectacular `OpenApiAuthenticationExtension` — missing stubs.
+
+### Stripe stubs
+
+- `# type: ignore[no-untyped-call]` — `Webhook.construct_event`, `SignatureVerificationError` missing return annotations.
+- `# type: ignore[arg-type]` — stub overloads don't match actual API signatures (`locale`, `**params`).
+- `# type: ignore[return-value]` — `session.url` typed as `str | None` but always `str` for hosted checkout.
+- `# type: ignore[attr-defined]` — `promotion_code.coupon` missing from stubs.
+
+### Celery
+
+- `# type: ignore[untyped-decorator]` on `@app.task` — celery has no type stubs.
+- `# type: ignore[attr-defined]` on `self.retry` / `self.request` in bound tasks — injected by Celery at runtime.
+
+### pydantic-settings
+
+- `# type: ignore[call-arg]` on `_Env()` — fields read from env vars; mypy sees no positional args.
+
+### Ruff / design-correct
+
+- `# noqa: DJ001` — nullable `CharField`/`TextField` where `NULL` has semantic meaning (e.g. no avatar vs empty string).
+- `# noqa: RUF012` — `Meta.constraints` / `Meta.indexes` must be mutable lists; `ClassVar` doesn't apply in Django `Meta`.
+- `# noqa: ANN401` — `*args`/`**kwargs` forwarded to parent methods; `Any` is appropriate.
+- `# noqa: F403` / `F405` / `E402` — star imports in settings files; standard Django inheritance pattern.
+- `# noqa: S106` / `S107` — hardcoded passwords in test fixtures.
+- `# noqa: F401` — side-effect import to register drf-spectacular auth extension.
+
+### Test-only
+
+- `# type: ignore[misc]` on frozen dataclass field mutation — intentional: testing that frozen models raise on mutation.

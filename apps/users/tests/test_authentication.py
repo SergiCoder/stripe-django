@@ -1,56 +1,46 @@
-"""Tests for SupabaseJWTAuthentication — all branches covered."""
+"""Tests for JWTAuthentication and token management — all branches covered."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import jwt
 import pytest
-from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from django.conf import settings
 from rest_framework.exceptions import AuthenticationFailed
 
-from apps.billing.models import Plan, PlanPrice, Subscription
-from apps.users.authentication import SupabaseJWTAuthentication, _get_jwks_client
-from apps.users.models import User
+from apps.users.authentication import (
+    JWTAuthentication,
+    _hash_token,
+    create_access_token,
+    create_email_verification_token,
+    create_password_reset_token,
+    create_refresh_token,
+    revoke_all_refresh_tokens,
+    revoke_refresh_token,
+    rotate_refresh_token,
+    verify_email_token,
+    verify_password_reset_token,
+)
+from apps.users.models import RefreshToken, User
 
-SECRET = settings.SUPABASE_JWT_SECRET
+SECRET = settings.SECRET_KEY
 
 
 def _make_token(
-    sub: str = "sup_test123",
-    email: str = "test@example.com",
-    email_verified: bool = True,
+    user_id: str = "00000000-0000-0000-0000-000000000001",
+    token_type: str = "access",  # noqa: S107
     exp_delta: timedelta | None = None,
     **extra,
 ) -> str:
     payload = {
-        "sub": sub,
-        "email": email,
-        "user_metadata": {"email_verified": email_verified},
-        "aud": "authenticated",
+        "sub": user_id,
+        "type": token_type,
         "exp": datetime.now(UTC) + (exp_delta or timedelta(hours=1)),
         **extra,
     }
     return jwt.encode(payload, SECRET, algorithm="HS256")
-
-
-def _make_asymmetric_token(
-    private_key: rsa.RSAPrivateKey | ec.EllipticCurvePrivateKey,
-    algorithm: str,
-    sub: str = "sup_test123",
-    email: str = "test@example.com",
-    exp_delta: timedelta | None = None,
-) -> str:
-    payload = {
-        "sub": sub,
-        "email": email,
-        "user_metadata": {"email_verified": True},
-        "aud": "authenticated",
-        "exp": datetime.now(UTC) + (exp_delta or timedelta(hours=1)),
-    }
-    return jwt.encode(payload, private_key, algorithm=algorithm)
 
 
 def _make_request(token: str | None = None) -> MagicMock:
@@ -62,8 +52,8 @@ def _make_request(token: str | None = None) -> MagicMock:
     return request
 
 
-class TestSupabaseJWTAuthentication:
-    auth = SupabaseJWTAuthentication()
+class TestJWTAuthentication:
+    auth = JWTAuthentication()
 
     def test_no_auth_header_returns_none(self):
         request = _make_request()
@@ -86,15 +76,21 @@ class TestSupabaseJWTAuthentication:
             self.auth.authenticate(request)
 
     def test_missing_sub_claim_raises(self):
-        token = _make_token(sub="")
+        token = _make_token(user_id="")
         request = _make_request(token)
         with pytest.raises(AuthenticationFailed, match="sub"):
             self.auth.authenticate(request)
 
+    def test_refresh_token_rejected_for_api_auth(self):
+        token = _make_token(token_type="refresh")  # noqa: S106
+        request = _make_request(token)
+        with pytest.raises(AuthenticationFailed, match="Invalid token type"):
+            self.auth.authenticate(request)
+
     @pytest.mark.django_db
     def test_existing_active_user_returned(self):
-        user = User.objects.create_user(email="existing@example.com", supabase_uid="sup_existing")
-        token = _make_token(sub="sup_existing", email="existing@example.com")
+        user = User.objects.create_user(email="existing@example.com", full_name="Existing")
+        token = _make_token(user_id=str(user.id))
         request = _make_request(token)
 
         result_user, result_token = self.auth.authenticate(request)
@@ -103,94 +99,50 @@ class TestSupabaseJWTAuthentication:
 
     @pytest.mark.django_db
     def test_user_cached_on_second_call(self):
-        User.objects.create_user(email="cached@example.com", supabase_uid="sup_cached")
-        token = _make_token(sub="sup_cached", email="cached@example.com")
+        user = User.objects.create_user(email="cached@example.com", full_name="Cached")
+        token = _make_token(user_id=str(user.id))
 
-        # First call: hits DB
         self.auth.authenticate(_make_request(token))
-        # Second call: should use cache (no DB needed)
         result_user, _ = self.auth.authenticate(_make_request(token))
         assert result_user.email == "cached@example.com"
 
     @pytest.mark.django_db
-    def test_auto_creates_user_when_not_found(self):
-        token = _make_token(sub="sup_new_user", email="new@example.com")
+    def test_nonexistent_user_raises(self):
+        token = _make_token(user_id="00000000-0000-0000-0000-000000000099")
         request = _make_request(token)
-
-        result_user, _ = self.auth.authenticate(request)
-        assert result_user.supabase_uid == "sup_new_user"
-        assert result_user.email == "new@example.com"
-        assert result_user.is_verified is True
-        # Verify it was persisted
-        assert User.objects.filter(supabase_uid="sup_new_user").exists()
-
-    @pytest.mark.django_db
-    def test_auto_create_assigns_free_plan(self):
-        """New users get a free-plan subscription automatically."""
-        plan = Plan.objects.create(
-            name="Personal Free",
-            context="personal",
-            tier="free",
-            interval="month",
-            is_active=True,
-        )
-        PlanPrice.objects.create(plan=plan, stripe_price_id="price_free_usd", amount=0)
-
-        token = _make_token(sub="sup_free_plan", email="free@example.com")
-        result_user, _ = self.auth.authenticate(_make_request(token))
-
-        sub = Subscription.objects.get(user=result_user)
-        assert sub.status == "active"
-        assert sub.plan == plan
-        assert sub.stripe_id is None
-        assert sub.stripe_customer is None
-
-    @pytest.mark.django_db
-    def test_missing_email_claim_when_user_not_found_raises(self):
-        token = _make_token(sub="sup_no_email", email="")
-        request = _make_request(token)
-        with pytest.raises(AuthenticationFailed, match="email"):
+        with pytest.raises(AuthenticationFailed, match="User not found"):
             self.auth.authenticate(request)
 
     @pytest.mark.django_db
-    def test_admin_deactivated_user_raises(self):
-        """An admin-deactivated user (is_active=False) cannot re-authenticate."""
-        User.objects.create_user(
-            email="deactivated@example.com",
-            supabase_uid="sup_deactivated",
-            is_active=False,
-        )
-        token = _make_token(sub="sup_deactivated", email="deactivated@example.com")
-        request = _make_request(token)
-        with pytest.raises(AuthenticationFailed, match="deactivated"):
-            self.auth.authenticate(request)
-
-    @pytest.mark.django_db
-    def test_self_deleted_user_rejected(self):
-        """A soft-deleted user (deleted_at set, is_active=True) is always rejected."""
-        user = User.objects.create_user(
-            email="deleted@example.com",
-            supabase_uid="sup_deleted",
-        )
+    def test_soft_deleted_user_rejected(self):
+        user = User.objects.create_user(email="deleted@example.com", full_name="Deleted")
         user.deleted_at = datetime.now(UTC)
         user.save()
-        token = _make_token(sub="sup_deleted", email="deleted@example.com")
+        token = _make_token(user_id=str(user.id))
         request = _make_request(token)
 
-        with pytest.raises(AuthenticationFailed) as exc_info:
+        with pytest.raises(AuthenticationFailed, match="User not found"):
             self.auth.authenticate(request)
-        assert exc_info.value.detail["code"] == "account_deleted"
+
+    @pytest.mark.django_db
+    def test_inactive_user_rejected(self):
+        user = User.objects.create_user(
+            email="inactive@example.com",
+            full_name="Inactive",
+            is_active=False,
+        )
+        token = _make_token(user_id=str(user.id))
+        request = _make_request(token)
+
+        with pytest.raises(AuthenticationFailed, match="User not found"):
+            self.auth.authenticate(request)
 
     @pytest.mark.django_db
     def test_scheduled_deletion_past_due_rejected(self):
-        """A user whose scheduled_deletion_at has passed is rejected."""
-        user = User.objects.create_user(
-            email="scheduled@example.com",
-            supabase_uid="sup_scheduled",
-        )
+        user = User.objects.create_user(email="scheduled@example.com", full_name="Scheduled")
         user.scheduled_deletion_at = datetime.now(UTC) - timedelta(hours=1)
         user.save()
-        token = _make_token(sub="sup_scheduled", email="scheduled@example.com")
+        token = _make_token(user_id=str(user.id))
         request = _make_request(token)
 
         with pytest.raises(AuthenticationFailed) as exc_info:
@@ -199,348 +151,193 @@ class TestSupabaseJWTAuthentication:
 
     @pytest.mark.django_db
     def test_scheduled_deletion_future_allowed(self):
-        """A user whose scheduled_deletion_at is in the future can still authenticate."""
-        user = User.objects.create_user(
-            email="future@example.com",
-            supabase_uid="sup_future",
-        )
+        user = User.objects.create_user(email="future@example.com", full_name="Future")
         user.scheduled_deletion_at = datetime.now(UTC) + timedelta(days=10)
         user.save()
-        token = _make_token(sub="sup_future", email="future@example.com")
+        token = _make_token(user_id=str(user.id))
         request = _make_request(token)
 
         result_user, _ = self.auth.authenticate(request)
         assert result_user.pk == user.pk
 
-    @pytest.mark.django_db
-    def test_auto_create_persists_full_name_from_metadata(self):
-        """When auto-creating a user, full_name from user_metadata is persisted."""
-        payload = {
-            "sub": "sup_fullname",
-            "email": "fname@example.com",
-            "user_metadata": {"email_verified": True, "full_name": "  Jane Doe  "},
-            "aud": "authenticated",
-            "exp": datetime.now(UTC) + timedelta(hours=1),
-        }
-        token = jwt.encode(payload, SECRET, algorithm="HS256")
-        request = _make_request(token)
-
-        result_user, _ = self.auth.authenticate(request)
-        assert result_user.full_name == "Jane Doe"
-
-    @pytest.mark.django_db
-    def test_auto_create_persists_pronouns_from_metadata(self):
-        """When auto-creating a user, pronouns from user_metadata is persisted."""
-        payload = {
-            "sub": "sup_pronouns",
-            "email": "pronouns@example.com",
-            "user_metadata": {"email_verified": True, "pronouns": " they/them "},
-            "aud": "authenticated",
-            "exp": datetime.now(UTC) + timedelta(hours=1),
-        }
-        token = jwt.encode(payload, SECRET, algorithm="HS256")
-        request = _make_request(token)
-
-        result_user, _ = self.auth.authenticate(request)
-        assert result_user.pronouns == "they/them"
-        # Verify persisted in DB
-        db_user = User.objects.get(supabase_uid="sup_pronouns")
-        assert db_user.pronouns == "they/them"
-
-    @pytest.mark.django_db
-    def test_auto_create_no_pronouns_in_metadata(self):
-        """When user_metadata has no pronouns, pronouns should be None."""
-        token = _make_token(sub="sup_no_pronouns", email="nopronouns@example.com")
-        request = _make_request(token)
-
-        result_user, _ = self.auth.authenticate(request)
-        assert result_user.pronouns is None
-
-    @pytest.mark.django_db
-    def test_auto_create_empty_pronouns_treated_as_none(self):
-        """When user_metadata has empty string pronouns, it should be treated as None."""
-        payload = {
-            "sub": "sup_empty_pronouns",
-            "email": "emptypro@example.com",
-            "user_metadata": {"email_verified": True, "pronouns": ""},
-            "aud": "authenticated",
-            "exp": datetime.now(UTC) + timedelta(hours=1),
-        }
-        token = jwt.encode(payload, SECRET, algorithm="HS256")
-        request = _make_request(token)
-
-        result_user, _ = self.auth.authenticate(request)
-        assert result_user.pronouns is None
-
-    @pytest.mark.django_db
-    def test_integrity_error_on_duplicate_email(self):
-        """When get_or_create races and hits an IntegrityError (e.g. duplicate email),
-        the authentication should raise a clear error."""
-        # Pre-create a user with the same email but a different supabase_uid
-        User.objects.create_user(email="conflict@example.com", supabase_uid="sup_other_uid")
-        token = _make_token(sub="sup_brand_new", email="conflict@example.com")
-        request = _make_request(token)
-        with pytest.raises(AuthenticationFailed, match="already associated"):
-            self.auth.authenticate(request)
-
     def test_authenticate_header_returns_bearer(self):
         request = _make_request()
         assert self.auth.authenticate_header(request) == "Bearer"
 
-    def test_unverified_email_rejected(self):
-        """Tokens with email_verified=False should be rejected."""
-        token = _make_token(email_verified=False)
-        request = _make_request(token)
-        with pytest.raises(AuthenticationFailed, match="Email not verified"):
-            self.auth.authenticate(request)
-
-    def test_missing_email_verified_claim_rejected(self):
-        """Tokens without email_verified claim default to rejected."""
-        payload = {
-            "sub": "sup_test123",
-            "email": "test@example.com",
-            "aud": "authenticated",
-            "exp": datetime.now(UTC) + timedelta(hours=1),
-        }
-        token = jwt.encode(payload, SECRET, algorithm="HS256")
-        request = _make_request(token)
-        with pytest.raises(AuthenticationFailed, match="Email not verified"):
-            self.auth.authenticate(request)
-
-    def test_non_dict_user_metadata_rejected(self):
-        """When user_metadata is present but not a dict, email_verified defaults to False."""
-        payload = {
-            "sub": "sup_test123",
-            "email": "test@example.com",
-            "user_metadata": "not-a-dict",
-            "aud": "authenticated",
-            "exp": datetime.now(UTC) + timedelta(hours=1),
-        }
-        token = jwt.encode(payload, SECRET, algorithm="HS256")
-        request = _make_request(token)
-        with pytest.raises(AuthenticationFailed, match="Email not verified"):
-            self.auth.authenticate(request)
-
-    def test_unsupported_algorithm_raises(self):
-        """A token with an unsupported algorithm should raise AuthenticationFailed."""
-        payload = {
-            "sub": "sup_test123",
-            "email": "test@example.com",
-            "aud": "authenticated",
-            "exp": datetime.now(UTC) + timedelta(hours=1),
-        }
-        token = jwt.encode(payload, SECRET, algorithm="HS256")
-        request = _make_request(token)
-        with patch(
-            "apps.users.authentication.jwt.get_unverified_header", return_value={"alg": "PS256"}
-        ):
-            with pytest.raises(AuthenticationFailed, match="Unsupported token algorithm"):
-                self.auth.authenticate(request)
-
-    @pytest.mark.django_db
-    def test_auto_create_missing_full_name_defaults_to_unknown(self):
-        """When user_metadata has no full_name, it defaults to 'Unknown'."""
-        payload = {
-            "sub": "sup_no_name",
-            "email": "noname@example.com",
-            "user_metadata": {"email_verified": True},
-            "aud": "authenticated",
-            "exp": datetime.now(UTC) + timedelta(hours=1),
-        }
-        token = jwt.encode(payload, SECRET, algorithm="HS256")
-        request = _make_request(token)
-
-        result_user, _ = self.auth.authenticate(request)
-        assert result_user.full_name == "Unknown"
-
-    @pytest.mark.django_db
-    def test_auto_create_empty_full_name_defaults_to_unknown(self):
-        """When user_metadata has empty/whitespace full_name, it defaults to 'Unknown'."""
-        payload = {
-            "sub": "sup_empty_name",
-            "email": "emptyname@example.com",
-            "user_metadata": {"email_verified": True, "full_name": "   "},
-            "aud": "authenticated",
-            "exp": datetime.now(UTC) + timedelta(hours=1),
-        }
-        token = jwt.encode(payload, SECRET, algorithm="HS256")
-        request = _make_request(token)
-
-        result_user, _ = self.auth.authenticate(request)
-        assert result_user.full_name == "Unknown"
-
-    @pytest.mark.django_db
-    def test_scheduled_deletion_exactly_now_is_rejected(self):
-        """A user whose scheduled_deletion_at is in the recent past is rejected."""
-        user = User.objects.create_user(
-            email="exact@example.com",
-            supabase_uid="sup_exact",
-        )
-        user.scheduled_deletion_at = datetime.now(UTC) - timedelta(seconds=1)
-        user.save()
-        token = _make_token(sub="sup_exact", email="exact@example.com")
-        request = _make_request(token)
-
-        with pytest.raises(AuthenticationFailed) as exc_info:
-            self.auth.authenticate(request)
-        assert exc_info.value.detail["code"] == "account_deleted"
-
     def test_expired_token_error_code(self):
-        """Expired token should return structured error with token_expired code."""
         token = _make_token(exp_delta=timedelta(hours=-1))
         request = _make_request(token)
         with pytest.raises(AuthenticationFailed) as exc_info:
             self.auth.authenticate(request)
         assert exc_info.value.detail["code"] == "token_expired"
 
-    def test_email_not_verified_error_code(self):
-        """Unverified email should return structured error with email_not_verified code."""
-        token = _make_token(email_verified=False)
-        request = _make_request(token)
-        with pytest.raises(AuthenticationFailed) as exc_info:
-            self.auth.authenticate(request)
-        assert exc_info.value.detail["code"] == "email_not_verified"
 
-    def test_missing_sub_error_code(self):
-        """Missing sub claim should return structured error with invalid_token code."""
-        token = _make_token(sub="")
-        request = _make_request(token)
-        with pytest.raises(AuthenticationFailed) as exc_info:
-            self.auth.authenticate(request)
-        assert exc_info.value.detail["code"] == "invalid_token"
-
-
-class TestAsymmetricJWTAuthentication:
-    """Tests for RS256 and ES256 (JWKS-based) authentication paths."""
-
-    auth = SupabaseJWTAuthentication()
+class TestTokenCreation:
+    @pytest.mark.django_db
+    def test_create_access_token_is_valid(self):
+        user = User.objects.create_user(email="token@example.com", full_name="Token User")
+        token = create_access_token(user)
+        payload = jwt.decode(token, SECRET, algorithms=["HS256"])
+        assert payload["sub"] == str(user.id)
+        assert payload["type"] == "access"
+        assert payload["email"] == user.email
 
     @pytest.mark.django_db
-    def test_rs256_token_verified_with_jwks(self):
-        """RS256 tokens should be verified via the JWKS client."""
-        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        public_key = private_key.public_key()
-
-        token = _make_asymmetric_token(
-            private_key, "RS256", sub="sup_rs256", email="rs@example.com"
-        )
-        request = _make_request(token)
-
-        mock_signing_key = MagicMock()
-        mock_signing_key.key = public_key
-
-        mock_jwks_client = MagicMock()
-        mock_jwks_client.get_signing_key_from_jwt.return_value = mock_signing_key
-
-        with patch("apps.users.authentication._get_jwks_client", return_value=mock_jwks_client):
-            result_user, result_token = self.auth.authenticate(request)
-
-        assert result_user.supabase_uid == "sup_rs256"
-        assert result_token == token
-        mock_jwks_client.get_signing_key_from_jwt.assert_called_once_with(token)
+    def test_create_refresh_token_returns_opaque_string(self):
+        user = User.objects.create_user(email="refresh@example.com", full_name="Refresh User")
+        raw = create_refresh_token(user)
+        assert isinstance(raw, str)
+        assert len(raw) > 20
+        # Stored as hash in DB
+        assert RefreshToken.objects.filter(token_hash=_hash_token(raw)).exists()
 
     @pytest.mark.django_db
-    def test_es256_token_verified_with_jwks(self):
-        """ES256 tokens should be verified via the JWKS client."""
-        private_key = ec.generate_private_key(ec.SECP256R1())
-        public_key = private_key.public_key()
+    def test_create_refresh_token_creates_db_record(self):
+        user = User.objects.create_user(email="rt_db@example.com", full_name="RT DB")
+        raw = create_refresh_token(user)
+        rt = RefreshToken.objects.get(token_hash=_hash_token(raw))
+        assert rt.user_id == user.id
+        assert rt.revoked_at is None
+        assert rt.expires_at > datetime.now(UTC)
 
-        token = _make_asymmetric_token(
-            private_key, "ES256", sub="sup_es256", email="es@example.com"
+
+@pytest.mark.django_db
+class TestRefreshTokenRotation:
+    def test_rotate_returns_new_token_and_user(self):
+        user = User.objects.create_user(email="rotate@example.com", full_name="Rotate")
+        raw = create_refresh_token(user)
+
+        returned_user, new_raw = rotate_refresh_token(raw)
+        assert returned_user.pk == user.pk
+        assert new_raw != raw
+        # Old token is revoked
+        old_rt = RefreshToken.objects.get(token_hash=_hash_token(raw))
+        assert old_rt.revoked_at is not None
+        # New token exists
+        assert RefreshToken.objects.filter(token_hash=_hash_token(new_raw)).exists()
+
+    def test_rotate_revoked_token_revokes_all(self):
+        user = User.objects.create_user(email="reuse@example.com", full_name="Reuse")
+        raw1 = create_refresh_token(user)
+        raw2 = create_refresh_token(user)
+
+        # Revoke raw1 first
+        revoke_refresh_token(raw1)
+        # Attempt reuse of revoked token should revoke all
+        with pytest.raises(AuthenticationFailed, match="revoked"):
+            rotate_refresh_token(raw1)
+        # raw2 should also be revoked now
+        rt2 = RefreshToken.objects.get(token_hash=_hash_token(raw2))
+        assert rt2.revoked_at is not None
+
+    def test_rotate_expired_token_raises(self):
+        user = User.objects.create_user(email="expired_rt@example.com", full_name="Expired RT")
+        raw = create_refresh_token(user)
+        # Force expire
+        rt = RefreshToken.objects.get(token_hash=_hash_token(raw))
+        rt.expires_at = datetime.now(UTC) - timedelta(hours=1)
+        rt.save(update_fields=["expires_at"])
+
+        with pytest.raises(AuthenticationFailed, match="expired"):
+            rotate_refresh_token(raw)
+
+    def test_rotate_nonexistent_token_raises(self):
+        with pytest.raises(AuthenticationFailed, match="Invalid"):
+            rotate_refresh_token("nonexistent-token")
+
+    def test_rotate_inactive_user_raises(self):
+        user = User.objects.create_user(
+            email="inactive_rt@example.com", full_name="Inactive RT", is_active=False
         )
-        request = _make_request(token)
+        raw = create_refresh_token(user)
+        with pytest.raises(AuthenticationFailed, match="User not found"):
+            rotate_refresh_token(raw)
 
-        mock_signing_key = MagicMock()
-        mock_signing_key.key = public_key
 
-        mock_jwks_client = MagicMock()
-        mock_jwks_client.get_signing_key_from_jwt.return_value = mock_signing_key
+@pytest.mark.django_db
+class TestRevokeRefreshToken:
+    def test_revoke_single_token(self):
+        user = User.objects.create_user(email="revoke1@example.com", full_name="Revoke1")
+        raw = create_refresh_token(user)
+        revoke_refresh_token(raw)
+        rt = RefreshToken.objects.get(token_hash=_hash_token(raw))
+        assert rt.revoked_at is not None
 
-        with patch("apps.users.authentication._get_jwks_client", return_value=mock_jwks_client):
-            result_user, result_token = self.auth.authenticate(request)
+    def test_revoke_nonexistent_is_noop(self):
+        revoke_refresh_token("does-not-exist")
 
-        assert result_user.supabase_uid == "sup_es256"
-        assert result_token == token
-
-    @pytest.mark.django_db
-    def test_rs256_expired_token_raises(self):
-        """An expired RS256 token should raise AuthenticationFailed."""
-        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        public_key = private_key.public_key()
-
-        token = _make_asymmetric_token(
-            private_key, "RS256", sub="sup_expired_rs", exp_delta=timedelta(hours=-1)
-        )
-        request = _make_request(token)
-
-        mock_signing_key = MagicMock()
-        mock_signing_key.key = public_key
-
-        mock_jwks_client = MagicMock()
-        mock_jwks_client.get_signing_key_from_jwt.return_value = mock_signing_key
-
-        with patch("apps.users.authentication._get_jwks_client", return_value=mock_jwks_client):
-            with pytest.raises(AuthenticationFailed, match="expired"):
-                self.auth.authenticate(request)
-
-    def test_rs256_invalid_signature_raises(self):
-        """An RS256 token signed with a wrong key should raise AuthenticationFailed."""
-        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        wrong_public_key = rsa.generate_private_key(
-            public_exponent=65537, key_size=2048
-        ).public_key()
-
-        token = _make_asymmetric_token(private_key, "RS256", sub="sup_bad_sig")
-        request = _make_request(token)
-
-        mock_signing_key = MagicMock()
-        mock_signing_key.key = wrong_public_key
-
-        mock_jwks_client = MagicMock()
-        mock_jwks_client.get_signing_key_from_jwt.return_value = mock_signing_key
-
-        with patch("apps.users.authentication._get_jwks_client", return_value=mock_jwks_client):
-            with pytest.raises(AuthenticationFailed, match="Invalid token"):
-                self.auth.authenticate(request)
-
-    def test_jwks_client_failure_raises(self):
-        """If the JWKS client fails, AuthenticationFailed should be raised."""
-        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        token = _make_asymmetric_token(private_key, "RS256", sub="sup_jwks_fail")
-        request = _make_request(token)
-
-        mock_jwks_client = MagicMock()
-        mock_jwks_client.get_signing_key_from_jwt.side_effect = jwt.PyJWKClientError(
-            "JWKS unreachable"
+    def test_revoke_all_for_user(self):
+        user = User.objects.create_user(email="revokeall@example.com", full_name="RevokeAll")
+        raw1 = create_refresh_token(user)
+        raw2 = create_refresh_token(user)
+        revoke_all_refresh_tokens(user)
+        assert RefreshToken.objects.filter(user=user, revoked_at__isnull=True).count() == 0
+        assert (
+            RefreshToken.objects.filter(
+                token_hash__in=[_hash_token(raw1), _hash_token(raw2)],
+                revoked_at__isnull=False,
+            ).count()
+            == 2
         )
 
-        with patch("apps.users.authentication._get_jwks_client", return_value=mock_jwks_client):
-            with pytest.raises(AuthenticationFailed, match="Invalid token"):
-                self.auth.authenticate(request)
 
-    def test_jwks_connection_error_raises(self):
-        """A network ConnectionError during JWKS fetch should raise AuthenticationFailed."""
-        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        token = _make_asymmetric_token(private_key, "RS256", sub="sup_conn_fail")
-        request = _make_request(token)
+@pytest.mark.django_db
+class TestEmailVerificationToken:
+    def test_create_and_verify(self):
+        user = User.objects.create_user(email="verify@example.com", full_name="Verify")
+        raw = create_email_verification_token(user)
+        returned_user = verify_email_token(raw)
+        assert returned_user.pk == user.pk
 
-        mock_jwks_client = MagicMock()
-        mock_jwks_client.get_signing_key_from_jwt.side_effect = ConnectionError(
-            "Network unreachable"
-        )
+    def test_verify_invalid_token_raises(self):
+        with pytest.raises(AuthenticationFailed, match="Invalid"):
+            verify_email_token("bad-token")
 
-        with patch("apps.users.authentication._get_jwks_client", return_value=mock_jwks_client):
-            with pytest.raises(AuthenticationFailed, match="Invalid token"):
-                self.auth.authenticate(request)
+    def test_verify_used_token_raises(self):
+        user = User.objects.create_user(email="used_vt@example.com", full_name="UsedVT")
+        raw = create_email_verification_token(user)
+        verify_email_token(raw)  # consume it
+        with pytest.raises(AuthenticationFailed, match="already been used"):
+            verify_email_token(raw)
+
+    def test_verify_expired_token_raises(self):
+        from apps.users.models import EmailVerificationToken
+
+        user = User.objects.create_user(email="exp_vt@example.com", full_name="ExpVT")
+        raw = create_email_verification_token(user)
+        evt = EmailVerificationToken.objects.get(token_hash=_hash_token(raw))
+        evt.expires_at = datetime.now(UTC) - timedelta(hours=1)
+        evt.save(update_fields=["expires_at"])
+        with pytest.raises(AuthenticationFailed, match="expired"):
+            verify_email_token(raw)
 
 
-class TestGetJWKSClient:
-    def test_returns_pyjwk_client(self):
-        import apps.users.authentication as auth_mod
+@pytest.mark.django_db
+class TestPasswordResetToken:
+    def test_create_and_verify(self):
+        user = User.objects.create_user(email="reset@example.com", full_name="Reset")
+        raw = create_password_reset_token(user)
+        returned_user = verify_password_reset_token(raw)
+        assert returned_user.pk == user.pk
 
-        auth_mod._jwks_client = None  # reset singleton for test isolation
-        try:
-            client = _get_jwks_client()
-            assert isinstance(client, jwt.PyJWKClient)
-        finally:
-            auth_mod._jwks_client = None
+    def test_verify_invalid_token_raises(self):
+        with pytest.raises(AuthenticationFailed, match="Invalid"):
+            verify_password_reset_token("bad-token")
+
+    def test_verify_used_token_raises(self):
+        user = User.objects.create_user(email="used_prt@example.com", full_name="UsedPRT")
+        raw = create_password_reset_token(user)
+        verify_password_reset_token(raw)
+        with pytest.raises(AuthenticationFailed, match="already been used"):
+            verify_password_reset_token(raw)
+
+    def test_verify_expired_token_raises(self):
+        from apps.users.models import PasswordResetToken
+
+        user = User.objects.create_user(email="exp_prt@example.com", full_name="ExpPRT")
+        raw = create_password_reset_token(user)
+        prt = PasswordResetToken.objects.get(token_hash=_hash_token(raw))
+        prt.expires_at = datetime.now(UTC) - timedelta(hours=1)
+        prt.save(update_fields=["expires_at"])
+        with pytest.raises(AuthenticationFailed, match="expired"):
+            verify_password_reset_token(raw)

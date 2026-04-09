@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from apps.users.models import User
+from apps.users.models import SocialAccount, User
 from apps.users.serializers import UpdateUserSerializer, UserSerializer
 
 
@@ -13,7 +13,6 @@ class TestUserSerializer:
     def test_serializes_expected_fields(self):
         user = User.objects.create_user(
             email="ser@example.com",
-            supabase_uid="sup_ser",
             full_name="Ser User",
         )
         data = UserSerializer(user).data
@@ -23,7 +22,6 @@ class TestUserSerializer:
         assert "created_at" in data
         # Sensitive fields should not leak
         assert "password" not in data
-        assert "supabase_uid" not in data
         assert "deleted_at" not in data
         assert "is_active" not in data
         assert "is_staff" not in data
@@ -35,7 +33,6 @@ class TestUserSerializer:
     def test_new_profile_fields_serialized(self):
         user = User.objects.create_user(
             email="profile@example.com",
-            supabase_uid="sup_profile",
             full_name="Profile User",
             phone_prefix="+34",
             phone="612345678",
@@ -57,7 +54,6 @@ class TestUserSerializer:
         """When phone_prefix and phone are both None, phone should serialize as None."""
         user = User.objects.create_user(
             email="nophone@example.com",
-            supabase_uid="sup_nophone",
             full_name="No Phone",
         )
         data = UserSerializer(user).data
@@ -67,7 +63,6 @@ class TestUserSerializer:
         """When phone_prefix is set, phone should serialize as an object."""
         user = User.objects.create_user(
             email="hasphone@example.com",
-            supabase_uid="sup_hasphone",
             full_name="Has Phone",
             phone_prefix="+1",
             phone="5551234567",
@@ -75,6 +70,32 @@ class TestUserSerializer:
         data = UserSerializer(user).data
         assert data["phone"]["prefix"] == "+1"
         assert data["phone"]["number"] == "5551234567"
+
+    def test_registration_method_in_response(self):
+        user = User.objects.create_user(email="reg@example.com", full_name="Reg User")
+        data = UserSerializer(user).data
+        assert data["registration_method"] == "email"
+
+    def test_registration_method_oauth(self):
+        user = User.objects.create_user(
+            email="oauth@example.com",
+            full_name="OAuth User",
+            registration_method="google",
+        )
+        data = UserSerializer(user).data
+        assert data["registration_method"] == "google"
+
+    def test_linked_providers_empty(self):
+        user = User.objects.create_user(email="noprov@example.com", full_name="No Prov")
+        data = UserSerializer(user).data
+        assert data["linked_providers"] == []
+
+    def test_linked_providers_with_accounts(self):
+        user = User.objects.create_user(email="linked@example.com", full_name="Linked User")
+        SocialAccount.objects.create(user=user, provider="google", provider_user_id="g1")
+        SocialAccount.objects.create(user=user, provider="github", provider_user_id="gh1")
+        data = UserSerializer(user).data
+        assert sorted(data["linked_providers"]) == ["github", "google"]
 
 
 class TestUpdateUserSerializer:
@@ -106,8 +127,12 @@ class TestUpdateUserSerializer:
         ser = UpdateUserSerializer(data={"avatar_url": None})
         assert ser.is_valid(), ser.errors
 
-    def test_invalid_avatar_url_rejected(self):
-        ser = UpdateUserSerializer(data={"avatar_url": "not-a-url"})
+    def test_avatar_url_accepts_relative_path(self):
+        ser = UpdateUserSerializer(data={"avatar_url": "/media/avatars/abc.jpg"})
+        assert ser.is_valid(), ser.errors
+
+    def test_avatar_url_too_long_rejected(self):
+        ser = UpdateUserSerializer(data={"avatar_url": "x" * 501})
         assert not ser.is_valid()
         assert "avatar_url" in ser.errors
 
