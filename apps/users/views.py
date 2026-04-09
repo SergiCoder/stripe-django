@@ -160,7 +160,7 @@ class AvatarView(APIView):
 
     @extend_schema(
         request=_AvatarUploadSerializer,
-        responses={200: dict},
+        responses={201: dict},
         tags=["account"],
     )
     def post(self, request: Request) -> Response:
@@ -200,7 +200,11 @@ class AvatarView(APIView):
         user.avatar_url = avatar_url
         user.save(update_fields=["avatar_url", "updated_at"])
 
-        return Response({"avatar_url": avatar_url})
+        return Response(
+            {"avatar_url": avatar_url},
+            status=status.HTTP_201_CREATED,
+            headers={"Location": avatar_url},
+        )
 
     @extend_schema(responses={204: None}, tags=["account"])
     def delete(self, request: Request) -> Response:

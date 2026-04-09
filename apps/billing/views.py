@@ -104,7 +104,14 @@ class PlanListView(APIView):
 
     permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]  # DRF declares as instance var; ClassVar needed for RUF012
 
-    @extend_schema(responses=PlanSerializer(many=True), tags=["billing"])
+    @extend_schema(
+        responses=PlanSerializer(many=True),
+        description=(
+            "List all active plans with prices. Not paginated"
+            " — the catalog is bounded to a small number of plans."
+        ),
+        tags=["billing"],
+    )
     def get(self, request: Request) -> Response:
         data = cache.get("active_plans")
         if data is None:
@@ -117,7 +124,14 @@ class PlanListView(APIView):
 class ProductListView(APIView):
     """GET /api/v1/billing/products — list active one-time products with prices."""
 
-    @extend_schema(responses=ProductSerializer(many=True), tags=["billing"])
+    @extend_schema(
+        responses=ProductSerializer(many=True),
+        description=(
+            "List all active one-time products with prices. Not paginated"
+            " — the catalog is bounded to a small number of products."
+        ),
+        tags=["billing"],
+    )
     def get(self, request: Request) -> Response:
         data = cache.get("active_products")
         if data is None:

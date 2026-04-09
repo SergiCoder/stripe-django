@@ -5,6 +5,7 @@ from __future__ import annotations
 from rest_framework import serializers
 
 from apps.orgs.models import Org, OrgMember, OrgRole
+from apps.users.models import User
 
 
 class OrgSerializer(serializers.ModelSerializer[Org]):
@@ -30,7 +31,16 @@ class UpdateOrgSerializer(serializers.Serializer[Org]):
     logo_url = serializers.URLField(required=False, allow_null=True)
 
 
+class _MemberUserSerializer(serializers.ModelSerializer[User]):
+    class Meta:
+        model = User
+        fields = ("id", "email", "full_name", "avatar_url")
+        read_only_fields = fields
+
+
 class OrgMemberSerializer(serializers.ModelSerializer[OrgMember]):
+    user = _MemberUserSerializer(read_only=True)
+
     class Meta:
         model = OrgMember
         fields = ("id", "org", "user", "role", "is_billing", "joined_at")
