@@ -15,6 +15,7 @@ from saasmint_core.domain.subscription import (
     PlanContext,
     PlanInterval,
     PlanPrice,
+    PlanTier,
     Subscription,
     SubscriptionStatus,
 )
@@ -191,6 +192,7 @@ class InMemoryPlanRepository:
                 for p in self._plans.values()
                 if p.is_active
                 and p.context == PlanContext.PERSONAL
+                and p.tier == PlanTier.FREE
                 and any(pr.plan_id == p.id and pr.amount == 0 for pr in self._prices.values())
             ),
             None,
