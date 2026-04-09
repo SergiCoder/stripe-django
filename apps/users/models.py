@@ -100,21 +100,31 @@ class RefreshToken(models.Model):
         return self.revoked_at is None and self.expires_at > datetime.now(UTC)
 
 
-class EmailVerificationToken(models.Model):
-    """One-time token sent to verify a user's email address."""
+class _OneTimeToken(models.Model):
+    """Abstract base for hashed one-time tokens (email verification, password reset)."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="verification_tokens")
+    # Subclasses must declare ``user`` with an explicit ``related_name``.
+    user_id: uuid.UUID  # populated by the FK declared in each subclass
     token_hash = models.CharField(max_length=64, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
     used_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        db_table = "email_verification_tokens"
+        abstract = True
 
     def __str__(self) -> str:
-        return f"EmailVerificationToken({self.id}, user={self.user_id})"
+        return f"{self.__class__.__name__}({self.id}, user={self.user_id})"
+
+
+class EmailVerificationToken(_OneTimeToken):
+    """One-time token sent to verify a user's email address."""
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="verification_tokens")
+
+    class Meta(_OneTimeToken.Meta):
+        db_table = "email_verification_tokens"
 
 
 class SocialAccount(models.Model):
@@ -143,18 +153,10 @@ class SocialAccount(models.Model):
         return f"SocialAccount({self.provider}, user={self.user_id})"
 
 
-class PasswordResetToken(models.Model):
+class PasswordResetToken(_OneTimeToken):
     """One-time token for password reset flow."""
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="password_reset_tokens")
-    token_hash = models.CharField(max_length=64, unique=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    expires_at = models.DateTimeField()
-    used_at = models.DateTimeField(null=True, blank=True)
 
-    class Meta:
+    class Meta(_OneTimeToken.Meta):
         db_table = "password_reset_tokens"
-
-    def __str__(self) -> str:
-        return f"PasswordResetToken({self.id}, user={self.user_id})"
