@@ -57,9 +57,7 @@ class DashboardView(TemplateView):
             DjangoProductRepository().list_active(),
             _get_org_memberships(user),
         )
-        plan = (
-            await plan_repo.get_by_id(subscription.plan_id) if subscription is not None else None
-        )
+        plan = await plan_repo.get_by_id(subscription.plan_id) if subscription is not None else None
         ctx = self.get_context_data(
             subscription=subscription,
             plan=plan,
