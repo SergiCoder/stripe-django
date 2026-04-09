@@ -16,6 +16,7 @@ PROVIDERS = ("google", "github", "microsoft")
 class OAuthUserInfo:
     email: str
     full_name: str
+    provider_user_id: str
     avatar_url: str | None = None
 
 
@@ -94,6 +95,7 @@ def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUserInfo:
         return OAuthUserInfo(
             email=info["email"],
             full_name=info.get("name", info["email"].split("@")[0]),
+            provider_user_id=str(info["id"]),
             avatar_url=info.get("picture"),
         )
     elif provider == "github":
@@ -101,12 +103,14 @@ def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUserInfo:
         return OAuthUserInfo(
             email=email,
             full_name=info.get("name") or info.get("login", email.split("@")[0]),
+            provider_user_id=str(info["id"]),
             avatar_url=info.get("avatar_url"),
         )
     else:  # microsoft
         return OAuthUserInfo(
             email=info.get("mail") or info.get("userPrincipalName", ""),
             full_name=info.get("displayName", ""),
+            provider_user_id=str(info["id"]),
         )
 
 

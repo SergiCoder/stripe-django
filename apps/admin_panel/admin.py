@@ -62,6 +62,7 @@ class UserAdminExtended(UserAdmin):  # type: ignore[type-arg]  # django-stubs Mo
     list_filter: ClassVar[tuple[object, ...]] = (
         DeletionStateFilter,
         "account_type",
+        "registration_method",
         "is_active",
         "is_staff",
         "is_verified",

@@ -21,6 +21,13 @@ class AccountType(models.TextChoices):
     ORG_MEMBER = "org_member", "Org Member"
 
 
+class RegistrationMethod(models.TextChoices):
+    EMAIL = "email", "Email"
+    GOOGLE = "google", "Google"
+    GITHUB = "github", "GitHub"
+    MICROSOFT = "microsoft", "Microsoft"
+
+
 class User(AbstractBaseUser, PermissionsMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     email = models.EmailField(unique=True)
@@ -40,6 +47,11 @@ class User(AbstractBaseUser, PermissionsMixin):
     pronouns = models.CharField(max_length=50, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means "don't specify"
     bio = models.TextField(blank=True, null=True)  # noqa: DJ001  # nullable TextField intentional: NULL means bio not set
     is_verified = models.BooleanField(default=False)
+    registration_method = models.CharField(
+        max_length=20,
+        choices=RegistrationMethod.choices,
+        default=RegistrationMethod.EMAIL,
+    )
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -104,6 +116,32 @@ class EmailVerificationToken(models.Model):
 
     def __str__(self) -> str:
         return f"EmailVerificationToken({self.id}, user={self.user_id})"
+
+
+class SocialAccount(models.Model):
+    """Links a User to an OAuth provider account."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="social_accounts")
+    provider = models.CharField(max_length=20)
+    provider_user_id = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "social_accounts"
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            models.UniqueConstraint(
+                fields=["provider", "provider_user_id"],
+                name="uq_social_provider_uid",
+            ),
+            models.UniqueConstraint(
+                fields=["user", "provider"],
+                name="uq_social_user_provider",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"SocialAccount({self.provider}, user={self.user_id})"
 
 
 class PasswordResetToken(models.Model):

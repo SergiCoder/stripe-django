@@ -16,6 +16,7 @@ class _PhoneReadSerializer(serializers.Serializer[User]):
 
 class UserSerializer(serializers.ModelSerializer[User]):
     phone = _PhoneReadSerializer(source="*", read_only=True, allow_null=True)
+    linked_providers = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -33,11 +34,16 @@ class UserSerializer(serializers.ModelSerializer[User]):
             "pronouns",
             "bio",
             "is_verified",
+            "registration_method",
+            "linked_providers",
             "created_at",
             "updated_at",
             "scheduled_deletion_at",
         )
         read_only_fields = fields
+
+    def get_linked_providers(self, obj: User) -> list[str]:
+        return list(obj.social_accounts.values_list("provider", flat=True))
 
     def to_representation(self, instance: User) -> dict[str, Any]:
         data = super().to_representation(instance)

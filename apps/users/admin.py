@@ -13,7 +13,7 @@ from saasmint_core.services.currency import SUPPORTED_CURRENCIES
 from saasmint_core.services.locale import SUPPORTED_LOCALES
 from saasmint_core.services.phone import SUPPORTED_PHONE_PREFIXES, sort_prefix_key
 
-from apps.users.models import User
+from apps.users.models import SocialAccount, User
 
 _LOCALE_CHOICES = [("", "---------")] + [(v, v) for v in sorted(SUPPORTED_LOCALES)]
 _CURRENCY_CHOICES = [("", "---------")] + [(v, v.upper()) for v in sorted(SUPPORTED_CURRENCIES)]
@@ -33,6 +33,7 @@ class UserChangeForm(forms.ModelForm):  # type: ignore[type-arg]
             "full_name",
             "avatar_url",
             "account_type",
+            "registration_method",
             "preferred_locale",
             "preferred_currency",
             "phone_prefix",
@@ -74,10 +75,16 @@ class UserAdmin(BaseUserAdmin):  # type: ignore[type-arg]  # django-stubs ModelA
         css: ClassVar[dict[str, tuple[str, ...]]] = {"all": ("users_admin.css",)}
 
     list_display = ("email", "full_name", "account_type", "is_verified", "is_active", "created_at")
-    list_filter = ("account_type", "is_active", "is_staff", "is_verified")
+    list_filter = ("account_type", "registration_method", "is_active", "is_staff", "is_verified")
     search_fields = ("email", "full_name")
     ordering = ("-created_at",)
-    readonly_fields = ("id", "created_at", "deleted_at", "scheduled_deletion_at")
+    readonly_fields = (
+        "id",
+        "registration_method",
+        "created_at",
+        "deleted_at",
+        "scheduled_deletion_at",
+    )
 
     def get_fieldsets(
         self,
@@ -103,6 +110,7 @@ class UserAdmin(BaseUserAdmin):  # type: ignore[type-arg]  # django-stubs ModelA
                     "pronouns",
                     "bio",
                     "is_verified",
+                    "registration_method",
                 )
             },
         ),
@@ -121,3 +129,12 @@ class UserAdmin(BaseUserAdmin):  # type: ignore[type-arg]  # django-stubs ModelA
             },
         ),
     )
+
+
+@admin.register(SocialAccount)
+class SocialAccountAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
+    list_display = ("user", "provider", "provider_user_id", "created_at")
+    list_filter = ("provider",)
+    search_fields = ("user__email", "provider_user_id")
+    readonly_fields = ("id", "created_at")
+    raw_id_fields = ("user",)
