@@ -12,6 +12,7 @@ paths:
       - account
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -37,6 +38,7 @@ paths:
               $ref: '#/components/schemas/PatchedUpdateUserRequest'
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -56,6 +58,7 @@ paths:
       - account
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -80,6 +83,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '201':
           content:
@@ -95,6 +99,7 @@ paths:
       - account
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '204':
           description: No response body
@@ -106,6 +111,7 @@ paths:
       - account
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -121,6 +127,7 @@ paths:
       - account
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -149,6 +156,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -176,6 +184,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '200':
@@ -205,6 +214,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '200':
@@ -233,6 +243,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '204':
           description: No response body
@@ -256,6 +267,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '200':
@@ -284,6 +296,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '201':
@@ -312,6 +325,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '200':
@@ -340,6 +354,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '200':
@@ -369,6 +384,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '201':
           content:
@@ -391,6 +407,7 @@ paths:
       - billing
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '200':
@@ -422,6 +439,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '201':
           content:
@@ -444,6 +462,7 @@ paths:
       - billing
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -458,10 +477,17 @@ paths:
       operationId: billing_subscription_retrieve
       description: GET/PATCH/DELETE /api/v1/billing/subscription — manage the current
         subscription.
+      parameters:
+      - in: query
+        name: currency
+        schema:
+          type: string
+        description: ISO 4217 currency code (e.g. 'eur'). Overrides user preference.
       tags:
       - billing
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -488,6 +514,7 @@ paths:
               $ref: '#/components/schemas/PatchedUpdateSubscriptionRequest'
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '204':
           description: No response body
@@ -499,6 +526,7 @@ paths:
       - billing
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '204':
           description: No response body
@@ -510,6 +538,7 @@ paths:
       - references
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '200':
@@ -528,6 +557,7 @@ paths:
       - references
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '200':
@@ -557,6 +587,7 @@ paths:
       - orgs
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -585,6 +616,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '201':
           content:
@@ -607,6 +639,7 @@ paths:
       - orgs
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -639,6 +672,7 @@ paths:
               $ref: '#/components/schemas/PatchedUpdateOrgRequest'
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -660,6 +694,7 @@ paths:
       - orgs
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '204':
           description: No response body
@@ -688,6 +723,7 @@ paths:
       - orgs
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -723,6 +759,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -768,6 +805,7 @@ paths:
               $ref: '#/components/schemas/PatchedUpdateMemberRequest'
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -795,6 +833,7 @@ paths:
       - orgs
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '204':
           description: No response body
@@ -806,6 +845,7 @@ paths:
       - references
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '200':
@@ -826,6 +866,7 @@ paths:
       - references
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '200':
@@ -1163,6 +1204,8 @@ components:
       - tier
     PlanPrice:
       type: object
+      description: Shared logic for serializers that add display_amount / currency
+        fields.
       properties:
         id:
           type: string
@@ -1235,6 +1278,8 @@ components:
       - type
     ProductPrice:
       type: object
+      description: Shared logic for serializers that add display_amount / currency
+        fields.
       properties:
         id:
           type: string
@@ -1580,3 +1625,7 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: 'Django-issued JWT. Pass as `Authorization: Bearer <token>`.'
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: sessionid
