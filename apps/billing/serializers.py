@@ -13,8 +13,8 @@ from apps.billing.models import Plan, PlanPrice, Product, ProductPrice, Subscrip
 
 def _convert_amount(amount: int, currency: str, rate: float) -> float:
     """Convert a USD-cents amount to a display amount in the target currency."""
-    converted = round(amount * rate)
-    return format_amount(int(converted), currency)
+    converted = round(amount * rate)  # round() returns int when ndigits is omitted
+    return format_amount(converted, currency)
 
 
 def _validate_redirect_url(url: str) -> str:
@@ -49,7 +49,21 @@ def _validate_redirect_url(url: str) -> str:
     raise serializers.ValidationError("URL domain is not in the list of allowed origins.")
 
 
-class PlanPriceSerializer(serializers.ModelSerializer[PlanPrice]):
+class _DisplayCurrencyMixin:
+    """Shared logic for serializers that add display_amount / currency fields."""
+
+    def get_display_amount(self, obj: PlanPrice | ProductPrice) -> float:
+        return _convert_amount(
+            obj.amount,
+            self.context.get("currency", "usd"),  # type: ignore[attr-defined]
+            self.context.get("rate", 1.0),  # type: ignore[attr-defined]
+        )
+
+    def get_currency(self, obj: PlanPrice | ProductPrice) -> str:
+        return str(self.context.get("currency", "usd"))  # type: ignore[attr-defined]
+
+
+class PlanPriceSerializer(_DisplayCurrencyMixin, serializers.ModelSerializer[PlanPrice]):
     display_amount = serializers.SerializerMethodField()
     currency = serializers.SerializerMethodField()
 
@@ -57,16 +71,6 @@ class PlanPriceSerializer(serializers.ModelSerializer[PlanPrice]):
         model = PlanPrice
         fields = ("id", "amount", "display_amount", "currency")
         read_only_fields = ("id", "amount")
-
-    def get_display_amount(self, obj: PlanPrice) -> float:
-        return _convert_amount(
-            obj.amount,
-            self.context.get("currency", "usd"),
-            self.context.get("rate", 1.0),
-        )
-
-    def get_currency(self, obj: PlanPrice) -> str:
-        return str(self.context.get("currency", "usd"))
 
 
 class PlanSerializer(serializers.ModelSerializer[Plan]):
@@ -87,7 +91,7 @@ class PlanSerializer(serializers.ModelSerializer[Plan]):
         read_only_fields = fields
 
 
-class ProductPriceSerializer(serializers.ModelSerializer[ProductPrice]):
+class ProductPriceSerializer(_DisplayCurrencyMixin, serializers.ModelSerializer[ProductPrice]):
     display_amount = serializers.SerializerMethodField()
     currency = serializers.SerializerMethodField()
 
@@ -95,16 +99,6 @@ class ProductPriceSerializer(serializers.ModelSerializer[ProductPrice]):
         model = ProductPrice
         fields = ("id", "amount", "display_amount", "currency")
         read_only_fields = ("id", "amount")
-
-    def get_display_amount(self, obj: ProductPrice) -> float:
-        return _convert_amount(
-            obj.amount,
-            self.context.get("currency", "usd"),
-            self.context.get("rate", 1.0),
-        )
-
-    def get_currency(self, obj: ProductPrice) -> str:
-        return str(self.context.get("currency", "usd"))
 
 
 class ProductSerializer(serializers.ModelSerializer[Product]):

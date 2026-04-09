@@ -7,6 +7,7 @@ from typing import ClassVar
 from uuid import UUID
 
 from asgiref.sync import async_to_sync
+from django.core.cache import cache
 from django.db.models import Q
 from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
 from rest_framework import serializers as drf_serializers
@@ -54,6 +55,13 @@ logger = logging.getLogger(__name__)
 
 MIN_TEAM_SEATS = 2
 
+_CURRENCY_PARAM = OpenApiParameter(
+    name="currency",
+    description="ISO 4217 currency code (e.g. 'eur'). Overrides user preference.",
+    required=False,
+    type=str,
+)
+
 
 def _resolve_display_currency(request: Request) -> str:
     """Resolve the display currency for a request.
@@ -77,13 +85,22 @@ def _resolve_display_currency(request: Request) -> str:
 def _get_exchange_rate(currency: str) -> tuple[str, float]:
     """Return ``(currency, rate)`` for conversion from USD.
 
+    Rates are cached for 10 minutes (they update hourly via Celery beat).
     Falls back to ``("usd", 1.0)`` if the rate is unavailable.
     """
     if currency == "usd":
         return "usd", 1.0
+
+    cache_key = f"exchange_rate:{currency}"
+    cached: float | None = cache.get(cache_key)
+    if cached is not None:
+        return currency, cached
+
     try:
         er = ExchangeRate.objects.get(currency=currency)
-        return currency, float(er.rate)
+        rate = float(er.rate)
+        cache.set(cache_key, rate, timeout=600)
+        return currency, rate
     except ExchangeRate.DoesNotExist:
         logger.warning("No exchange rate found for %s, falling back to USD", currency)
         return "usd", 1.0
@@ -147,14 +164,7 @@ class PlanListView(APIView):
     permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]  # DRF declares as instance var; ClassVar needed for RUF012
 
     @extend_schema(
-        parameters=[
-            OpenApiParameter(
-                name="currency",
-                description="ISO 4217 currency code (e.g. 'eur'). Overrides user preference.",
-                required=False,
-                type=str,
-            ),
-        ],
+        parameters=[_CURRENCY_PARAM],
         responses=PlanSerializer(many=True),
         description=(
             "List all active plans with prices. Not paginated"
@@ -172,14 +182,7 @@ class ProductListView(APIView):
     """GET /api/v1/billing/products — list active one-time products with prices."""
 
     @extend_schema(
-        parameters=[
-            OpenApiParameter(
-                name="currency",
-                description="ISO 4217 currency code (e.g. 'eur'). Overrides user preference.",
-                required=False,
-                type=str,
-            ),
-        ],
+        parameters=[_CURRENCY_PARAM],
         responses=ProductSerializer(many=True),
         description=(
             "List all active one-time products with prices. Not paginated"
@@ -281,7 +284,11 @@ class SubscriptionView(APIView):
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "billing"
 
-    @extend_schema(responses={200: SubscriptionSerializer}, tags=["billing"])
+    @extend_schema(
+        parameters=[_CURRENCY_PARAM],
+        responses={200: SubscriptionSerializer},
+        tags=["billing"],
+    )
     def get(self, request: Request) -> Response:
         user = get_user(request)
         customer_id = getattr(getattr(user, "stripe_customer", None), "id", None)

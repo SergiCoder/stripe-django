@@ -31,9 +31,9 @@ def sync_exchange_rates() -> None:
         return
 
     now = datetime.now(UTC)
-    rates: dict[str, object] = dict(rates_obj.rates)  # type: ignore[arg-type]  # Stripe stubs type mismatch
+    rates: dict[str, float] = dict(rates_obj.rates)  # type: ignore[arg-type]  # Stripe stubs type mismatch
 
-    updated = 0
+    rows: list[ExchangeRate] = []
     for currency in SUPPORTED_CURRENCIES:
         if currency == "usd":
             continue
@@ -41,12 +41,16 @@ def sync_exchange_rates() -> None:
         if rate is None:
             logger.warning("No rate returned by Stripe for currency: %s", currency)
             continue
-        ExchangeRate.objects.update_or_create(
-            currency=currency,
-            defaults={"rate": rate, "fetched_at": now},
+        rows.append(ExchangeRate(currency=currency, rate=rate, fetched_at=now))
+
+    if rows:
+        ExchangeRate.objects.bulk_create(
+            rows,
+            update_conflicts=True,
+            unique_fields=["currency"],
+            update_fields=["rate", "fetched_at"],
         )
-        updated += 1
-    logger.info("Exchange rates synced: %d currencies updated", updated)
+    logger.info("Exchange rates synced: %d currencies updated", len(rows))
 
 
 @app.task(bind=True, max_retries=3)  # type: ignore[untyped-decorator]  # celery has no stubs
