@@ -12,7 +12,10 @@ import stripe
 # only way to get nominal typing for the `discounts` parameter; if stripe
 # reorganises these modules the import will fail loudly at startup, which is
 # preferable to a silent fallback to `Any`.
-from stripe.params._subscription_modify_params import SubscriptionModifyParamsDiscount
+from stripe.params._subscription_modify_params import (
+    SubscriptionModifyParamsDiscount,
+    SubscriptionModifyParamsItem,
+)
 
 from saasmint_core.services.coupons import validate_promo_code
 
@@ -45,20 +48,16 @@ async def change_plan(
     item_id = await _get_first_item_id(stripe_subscription_id)
     proration: Literal["create_prorations", "none"] = "create_prorations" if prorate else "none"
 
+    item: SubscriptionModifyParamsItem = {"id": item_id, "price": new_stripe_price_id}
     if quantity is not None:
-        await asyncio.to_thread(
-            stripe.Subscription.modify,
-            stripe_subscription_id,
-            items=[{"id": item_id, "price": new_stripe_price_id, "quantity": quantity}],
-            proration_behavior=proration,
-        )
-    else:
-        await asyncio.to_thread(
-            stripe.Subscription.modify,
-            stripe_subscription_id,
-            items=[{"id": item_id, "price": new_stripe_price_id}],
-            proration_behavior=proration,
-        )
+        item["quantity"] = quantity
+
+    await asyncio.to_thread(
+        stripe.Subscription.modify,
+        stripe_subscription_id,
+        items=[item],
+        proration_behavior=proration,
+    )
 
 
 async def update_seat_count(
