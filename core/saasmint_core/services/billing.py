@@ -167,10 +167,6 @@ async def resume_subscription(
     if active is None or active.stripe_id is None:
         raise SubscriptionNotFoundError("No active subscription found to resume.")
 
-    # Stripe's documented "Stop a pending cancellation" call. This clears any
-    # scheduled cancel — including one set via cancel_at="min_period_end" in
-    # the 2025-03-31.basil API — and is the only resume path that passes
-    # both the basil typed-dicts and mypy.
-    await asyncio.to_thread(
-        stripe.Subscription.modify, active.stripe_id, cancel_at_period_end=False
-    )
+    # 2025-03-31.basil: clear a scheduled cancellation set via
+    # cancel_at="min_period_end" by passing cancel_at="".
+    await asyncio.to_thread(stripe.Subscription.modify, active.stripe_id, cancel_at="")

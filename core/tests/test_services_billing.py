@@ -363,7 +363,7 @@ async def test_resume_subscription_clears_cancel_at() -> None:
             subscription_repo=repo,
         )
 
-    mock_modify.assert_called_once_with("sub_resume", cancel_at_period_end=False)
+    mock_modify.assert_called_once_with("sub_resume", cancel_at="")
 
 
 @pytest.mark.anyio
