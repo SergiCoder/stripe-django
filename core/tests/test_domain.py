@@ -435,3 +435,102 @@ def test_stripe_event_model_copy_processed() -> None:
     processed = event.model_copy(update={"processed_at": NOW})
     assert processed.processed_at == NOW
     assert event.processed_at is None
+
+
+# ── Subscription.is_free ────────────────────────────────────────────────────
+
+
+def test_subscription_is_free_when_no_stripe_id() -> None:
+    sub = Subscription(
+        id=uuid4(),
+        stripe_id=None,
+        stripe_customer_id=None,
+        user_id=uuid4(),
+        status=SubscriptionStatus.ACTIVE,
+        plan_id=uuid4(),
+        current_period_start=NOW,
+        current_period_end=NOW,
+        created_at=NOW,
+    )
+    assert sub.is_free is True
+
+
+def test_subscription_is_not_free_when_has_stripe_id() -> None:
+    sub = Subscription(
+        id=uuid4(),
+        stripe_id="sub_paid",
+        stripe_customer_id=uuid4(),
+        status=SubscriptionStatus.ACTIVE,
+        plan_id=uuid4(),
+        current_period_start=NOW,
+        current_period_end=NOW,
+        created_at=NOW,
+    )
+    assert sub.is_free is False
+
+
+# ── FREE_SUBSCRIPTION_PERIOD_END sentinel ───────────────────────────────────
+
+
+def test_free_subscription_period_end_sentinel() -> None:
+    from saasmint_core.domain.subscription import FREE_SUBSCRIPTION_PERIOD_END
+
+    assert FREE_SUBSCRIPTION_PERIOD_END.year == 9999
+    assert FREE_SUBSCRIPTION_PERIOD_END.tzinfo is not None
+
+
+# ── Product / ProductPrice domain models ────────────────────────────────────
+
+
+def test_product_creation() -> None:
+    from saasmint_core.domain.product import Product, ProductType
+
+    product = Product(
+        id=uuid4(),
+        name="100 Credits",
+        type=ProductType.ONE_TIME,
+        credits=100,
+    )
+    assert product.name == "100 Credits"
+    assert product.type == ProductType.ONE_TIME
+    assert product.credits == 100
+    assert product.is_active is True
+
+
+def test_product_inactive() -> None:
+    from saasmint_core.domain.product import Product, ProductType
+
+    product = Product(
+        id=uuid4(),
+        name="Retired Pack",
+        type=ProductType.ONE_TIME,
+        credits=50,
+        is_active=False,
+    )
+    assert product.is_active is False
+
+
+def test_product_is_frozen() -> None:
+    from saasmint_core.domain.product import Product, ProductType
+
+    product = Product(
+        id=uuid4(),
+        name="100 Credits",
+        type=ProductType.ONE_TIME,
+        credits=100,
+    )
+    with pytest.raises(ValidationError):
+        product.name = "Changed"  # type: ignore[misc]
+
+
+def test_product_price_creation() -> None:
+    from saasmint_core.domain.product import ProductPrice
+
+    price = ProductPrice(
+        id=uuid4(),
+        product_id=uuid4(),
+        stripe_price_id="price_credits_100",
+        amount=999,
+    )
+    assert price.amount == 999
+    assert price.stripe_price_id == "price_credits_100"
