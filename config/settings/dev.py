@@ -12,6 +12,8 @@ CORS_ALLOW_ALL_ORIGINS = True
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 USE_X_FORWARDED_HOST = True
 USE_X_FORWARDED_PORT = True
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True
 # Wildcard: treat every IP as internal so django-debug-toolbar works
 # regardless of whether the request comes from localhost or a Docker network.
 INTERNAL_IPS = type("WildcardIPs", (), {"__contains__": lambda self, addr: True})()

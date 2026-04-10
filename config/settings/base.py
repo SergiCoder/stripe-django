@@ -39,7 +39,7 @@ class _Env(BaseSettings):
     cors_allow_all_origins: bool = False
     csrf_trusted_origins: list[str] = []
     resend_api_key: str = ""
-    frontend_url: str = "http://localhost:3000"
+    frontend_url: str = "https://localhost:3000"
     email_from_address: str = "noreply@saasmint.com"
     oauth_google_client_id: str = ""
     oauth_google_client_secret: str = ""

@@ -93,7 +93,7 @@ Links to Swagger and ReDoc also appear in the Django admin header (debug only).
 | `DJANGO_SETTINGS_MODULE` | Python dotted path to the Django settings module (e.g. `config.settings.dev`) |
 | `RESEND_API_KEY` | [Resend](https://resend.com) API key for transactional email (verification, password reset) |
 | `EMAIL_FROM_ADDRESS` | Sender address for outbound email (defaults to `noreply@saasmint.com`) |
-| `FRONTEND_URL` | Base URL of the frontend app, used in email links (defaults to `http://localhost:3000`) |
+| `FRONTEND_URL` | Base URL of the frontend app, used in email links (defaults to `https://localhost:3000`) |
 | `OAUTH_GOOGLE_CLIENT_ID` | Google OAuth 2.0 client ID (optional) |
 | `OAUTH_GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 client secret (optional) |
 | `OAUTH_GITHUB_CLIENT_ID` | GitHub OAuth app client ID (optional) |
