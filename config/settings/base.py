@@ -213,7 +213,7 @@ CELERY_BEAT_SCHEDULE = {
     },
     "sync-exchange-rates": {
         "task": "apps.billing.tasks.sync_exchange_rates",
-        "schedule": 3600,  # every hour
+        "schedule": 86400,  # once per day
     },
 }
 

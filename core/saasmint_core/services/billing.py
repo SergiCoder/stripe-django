@@ -90,6 +90,7 @@ async def create_checkout_session(
     }
 
     params["allow_promotion_codes"] = True
+    params["adaptive_pricing"] = {"enabled": True}
 
     if subscription_data:
         params["subscription_data"] = subscription_data

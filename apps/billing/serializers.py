@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 
 from django.conf import settings
 from rest_framework import serializers
-from saasmint_core.services.currency import format_amount
+from saasmint_core.services.currency import format_amount, round_friendly
 
 from apps.billing.models import Plan, PlanPrice, Product, ProductPrice, Subscription
 
@@ -14,7 +14,10 @@ from apps.billing.models import Plan, PlanPrice, Product, ProductPrice, Subscrip
 def _convert_amount(amount: int, currency: str, rate: float) -> float:
     """Convert a USD-cents amount to a display amount in the target currency."""
     converted = round(amount * rate)  # round() returns int when ndigits is omitted
-    return format_amount(converted, currency)
+    raw = format_amount(converted, currency)
+    if currency != "usd":
+        return round_friendly(raw, currency)
+    return raw
 
 
 def _validate_redirect_url(url: str) -> str:
@@ -62,14 +65,19 @@ class _DisplayCurrencyMixin:
     def get_currency(self, obj: PlanPrice | ProductPrice) -> str:
         return str(self.context.get("currency", "usd"))  # type: ignore[attr-defined]
 
+    def get_approximate(self, obj: PlanPrice | ProductPrice) -> bool:
+        currency: str = self.context.get("currency", "usd")  # type: ignore[attr-defined]
+        return currency != "usd"
+
 
 class PlanPriceSerializer(_DisplayCurrencyMixin, serializers.ModelSerializer[PlanPrice]):
     display_amount = serializers.SerializerMethodField()
     currency = serializers.SerializerMethodField()
+    approximate = serializers.SerializerMethodField()
 
     class Meta:
         model = PlanPrice
-        fields = ("id", "amount", "display_amount", "currency")
+        fields = ("id", "amount", "display_amount", "currency", "approximate")
         read_only_fields = ("id", "amount")
 
 
@@ -94,10 +102,11 @@ class PlanSerializer(serializers.ModelSerializer[Plan]):
 class ProductPriceSerializer(_DisplayCurrencyMixin, serializers.ModelSerializer[ProductPrice]):
     display_amount = serializers.SerializerMethodField()
     currency = serializers.SerializerMethodField()
+    approximate = serializers.SerializerMethodField()
 
     class Meta:
         model = ProductPrice
-        fields = ("id", "amount", "display_amount", "currency")
+        fields = ("id", "amount", "display_amount", "currency", "approximate")
         read_only_fields = ("id", "amount")
 
 

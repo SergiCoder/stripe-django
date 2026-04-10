@@ -279,16 +279,18 @@ class TestPlanPriceSerializerCurrency:
         ctx = {"currency": "eur", "rate": 0.91}
         data = PlanPriceSerializer(plan_price, context=ctx).data
         assert data["currency"] == "eur"
-        # 999 * 0.91 = 909.09 → round → 909 → /100 → 9.09
-        assert data["display_amount"] == 9.09
+        # 999 * 0.91 = 909.09 → round → 909 → /100 → 9.09 → friendly → 9.49
+        assert data["display_amount"] == 9.49
+        assert data["approximate"] is True
         assert data["amount"] == 999  # original unchanged
 
     def test_converts_amount_with_jpy_zero_decimal(self, plan_price):
         ctx = {"currency": "jpy", "rate": 149.5}
         data = PlanPriceSerializer(plan_price, context=ctx).data
         assert data["currency"] == "jpy"
-        # 999 * 149.5 = 149350.5 → round → 149350 → zero-decimal → 149350.0
-        assert data["display_amount"] == 149350.0
+        # 999 * 149.5 = 149350.5 → round → 149350 → zero-decimal → friendly → 149400.0
+        assert data["display_amount"] == 149400.0
+        assert data["approximate"] is True
 
 
 @pytest.mark.django_db
@@ -317,8 +319,9 @@ class TestProductPriceSerializer:
         ctx = {"currency": "gbp", "rate": 0.79}
         data = ProductPriceSerializer(price, context=ctx).data
         assert data["currency"] == "gbp"
-        # 500 * 0.79 = 395 → round → 395 → /100 → 3.95
-        assert data["display_amount"] == 3.95
+        # 500 * 0.79 = 395 → round → 395 → /100 → 3.95 → friendly → 3.99 (rounds up)
+        assert data["display_amount"] == 3.99
+        assert data["approximate"] is True
 
 
 @pytest.mark.django_db

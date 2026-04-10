@@ -670,8 +670,9 @@ class TestCurrencyConversion:
         resp = client.get("/api/v1/billing/plans/?currency=eur")
         price = resp.data[0]["price"]
         assert price["currency"] == "eur"
-        # 999 cents * 0.91 = 909.09 → round → 909 minor units → 9.09
-        assert price["display_amount"] == 9.09
+        # 999 cents * 0.91 = 909.09 → round → 909 minor units → 9.09 → friendly → 9.49
+        assert price["display_amount"] == 9.49
+        assert price["approximate"] is True
         # Original USD cents still present
         assert price["amount"] == 999
 
@@ -682,6 +683,7 @@ class TestCurrencyConversion:
         # No ExchangeRate for EUR → fallback to USD
         assert price["currency"] == "usd"
         assert price["display_amount"] == 9.99
+        assert price["approximate"] is False
 
     def test_invalid_currency_param_ignored(self, plan, plan_price):
         client = APIClient()
@@ -725,8 +727,9 @@ class TestCurrencyConversion:
         resp = client.get("/api/v1/billing/plans/?currency=jpy")
         price = resp.data[0]["price"]
         assert price["currency"] == "jpy"
-        # 999 * 149.5 = 149350.5 → round → 149350 (banker's rounding) → JPY zero-decimal → 149350.0
-        assert price["display_amount"] == 149350.0
+        # 999 * 149.5 = 149350.5 → round → 149350 → zero-decimal → friendly → 149400.0
+        assert price["display_amount"] == 149400.0
+        assert price["approximate"] is True
 
     def test_subscription_includes_currency(self, authed_client, subscription):
         resp = authed_client.get("/api/v1/billing/subscription/")
@@ -744,8 +747,9 @@ class TestCurrencyConversion:
         resp = authed_client.get("/api/v1/billing/products/?currency=eur")
         price = resp.data[0]["price"]
         assert price["currency"] == "eur"
-        # 500 * 0.91 = 455 → /100 → 4.55
-        assert price["display_amount"] == 4.55
+        # 500 * 0.91 = 455 → /100 → 4.55 → friendly → 4.99 (rounds up)
+        assert price["display_amount"] == 4.99
+        assert price["approximate"] is True
 
     def test_user_default_currency_returns_usd(self, authed_client, user, plan, plan_price):
         """User with default preferred_currency='usd' gets USD without exchange rate lookup."""
