@@ -50,7 +50,6 @@ services:
     ports:
       - "8001:8001"
     env_file:
-      - .env.django
       - .env.local
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-saasmint}:${POSTGRES_PASSWORD:-saasmint}@postgres:5432/${POSTGRES_DB:-saasmint}
@@ -71,7 +70,6 @@ services:
       dockerfile: infra/Dockerfile
     command: uv run celery -A config.celery worker --loglevel=info
     env_file:
-      - .env.django
       - .env.local
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-saasmint}:${POSTGRES_PASSWORD:-saasmint}@postgres:5432/${POSTGRES_DB:-saasmint}

@@ -23,10 +23,7 @@ _ACTIVE_ENV = _REPO_ROOT / _ENV_FILE_MAP.get(_ENV_NAME, ".env.local")
 
 class _Env(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=(
-            str(_ACTIVE_ENV),
-            str(_REPO_ROOT / ".env.django"),
-        ),
+        env_file=(str(_ACTIVE_ENV),),
         env_file_encoding="utf-8",
         extra="ignore",
     )
