@@ -3,8 +3,9 @@
 import logging
 
 from django.contrib import admin
-from django.db.models import QuerySet
-from django.http import HttpRequest
+from django.db.models import Count, QuerySet
+from django.http import HttpRequest, HttpResponse
+from django.template.response import TemplateResponse
 
 from apps.orgs.models import Invitation, Org, OrgMember
 
@@ -28,16 +29,41 @@ class OrgAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs gene
         return False
 
     @admin.action(description="Delete selected orgs (cancel subs, hard-delete members)")
-    def delete_org_action(self, request: HttpRequest, queryset: QuerySet[Org]) -> None:
+    def delete_org_action(
+        self, request: HttpRequest, queryset: QuerySet[Org]
+    ) -> HttpResponse | None:
         from apps.orgs.services import delete_org
 
+        active_orgs = queryset.filter(deleted_at__isnull=True)
+
+        if not active_orgs.exists():
+            self.message_user(request, "No active orgs selected.")
+            return None
+
+        # Show confirmation page unless already confirmed
+        if "confirm" not in request.POST:
+            orgs = active_orgs.select_related("created_by").annotate(
+                member_count=Count("members"),
+            )
+            return TemplateResponse(
+                request,
+                "admin/orgs/delete_org_confirmation.html",
+                {
+                    **self.admin_site.each_context(request),
+                    "title": "Confirm org deletion",
+                    "orgs": orgs,
+                    "opts": self.model._meta,
+                },
+            )
+
         count = 0
-        for org in queryset.filter(deleted_at__isnull=True):
+        for org in active_orgs:
             delete_org(org)
             count += 1
             logger.info("Admin %s deleted org %s (%s)", request.user, org.slug, org.id)
 
         self.message_user(request, f"Deleted {count} org(s) and all associated member accounts.")
+        return None
 
 
 @admin.register(OrgMember)

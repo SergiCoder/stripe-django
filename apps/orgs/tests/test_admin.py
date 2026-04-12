@@ -56,10 +56,29 @@ def member_membership(org, member):
     return OrgMember.objects.create(org=org, user=member, role=OrgRole.MEMBER)
 
 
+def _action_payload(org_ids: list[str], *, confirm: bool = False) -> dict[str, object]:
+    data: dict[str, object] = {
+        "action": "delete_org_action",
+        "_selected_action": org_ids,
+    }
+    if confirm:
+        data["confirm"] = "yes"
+    return data
+
+
 @pytest.mark.django_db
 class TestOrgAdminDeleteAction:
+    def test_shows_confirmation_page(self, admin_client_django, org, owner_membership):
+        resp = admin_client_django.post(
+            "/admin/orgs/org/",
+            _action_payload([str(org.id)]),
+        )
+        assert resp.status_code == 200
+        assert b"TestOrg" in resp.content
+        assert b"permanently delete" in resp.content
+
     @patch("apps.orgs.services._cancel_team_subscription")
-    def test_delete_action_soft_deletes_org_and_hard_deletes_members(
+    def test_confirm_deletes_org_and_hard_deletes_members(
         self,
         mock_cancel_sub,
         admin_client_django,
@@ -74,7 +93,7 @@ class TestOrgAdminDeleteAction:
 
         resp = admin_client_django.post(
             "/admin/orgs/org/",
-            {"action": "delete_org_action", "_selected_action": [str(org.id)]},
+            _action_payload([str(org.id)], confirm=True),
         )
         assert resp.status_code == 302  # redirect back to changelist
 
@@ -85,7 +104,7 @@ class TestOrgAdminDeleteAction:
         assert not OrgMember.objects.filter(org=org).exists()
 
     @patch("apps.orgs.services._cancel_team_subscription")
-    def test_delete_action_skips_already_deleted_orgs(
+    def test_skips_already_deleted_orgs(
         self, mock_cancel_sub, admin_client_django, org, owner_membership, org_owner
     ):
         from django.utils import timezone
@@ -96,7 +115,7 @@ class TestOrgAdminDeleteAction:
 
         admin_client_django.post(
             "/admin/orgs/org/",
-            {"action": "delete_org_action", "_selected_action": [str(org.id)]},
+            _action_payload([str(org.id)], confirm=True),
         )
         # Owner should NOT be deleted since org was already soft-deleted
         assert User.objects.filter(id=owner_id).exists()
