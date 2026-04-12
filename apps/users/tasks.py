@@ -46,9 +46,17 @@ def process_scheduled_deletions() -> None:
     pending_users = async_to_sync(user_repo.list_pending_deletions)()
 
     async def _pre_delete(user_id: UUID) -> None:
-        from apps.orgs.services import delete_orgs_created_by_user
+        from apps.orgs.models import OrgMember
+        from apps.orgs.services import decrement_subscription_seats, delete_orgs_created_by_user
 
+        # If owner: delete owned orgs (cascades member account deletion)
         await sync_to_async(delete_orgs_created_by_user)(user_id)
+        # If non-owner member: remove from org + decrement seats
+        membership = await OrgMember.objects.filter(user_id=user_id).afirst()
+        if membership:
+            org_id = membership.org_id
+            await membership.adelete()
+            await sync_to_async(decrement_subscription_seats)(org_id)
 
     for user in pending_users:
         try:
@@ -62,3 +70,29 @@ def process_scheduled_deletions() -> None:
             logger.info("Executed scheduled deletion for user %s", user.id)
         except Exception:
             logger.exception("Failed scheduled deletion for user %s", user.id)
+
+
+@app.task  # type: ignore[untyped-decorator]  # celery has no stubs
+def cleanup_orphaned_org_accounts() -> None:
+    """Delete org_member accounts that never completed checkout.
+
+    Targets users with account_type=ORG_MEMBER who have no org membership
+    and were created more than 24 hours ago.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from apps.orgs.models import OrgMember
+    from apps.users.models import AccountType, User
+
+    cutoff = datetime.now(UTC) - timedelta(hours=24)
+    orphans = User.objects.filter(
+        account_type=AccountType.ORG_MEMBER,
+        created_at__lt=cutoff,
+        deleted_at__isnull=True,
+    ).exclude(
+        id__in=OrgMember.objects.values_list("user_id", flat=True),
+    )
+    count = orphans.count()
+    if count:
+        orphans.delete()
+        logger.info("Cleaned up %d orphaned org-member accounts", count)

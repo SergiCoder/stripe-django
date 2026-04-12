@@ -8,13 +8,13 @@ from datetime import timedelta
 from typing import ClassVar
 from uuid import UUID
 
-from asgiref.sync import async_to_sync
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status
 from rest_framework.pagination import LimitOffsetPagination
+from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
@@ -26,6 +26,7 @@ from saasmint_core.services.orgs import check_can_manage_member
 from apps.orgs.models import Invitation, InvitationStatus, Org, OrgMember, OrgRole
 from apps.orgs.serializers import (
     CreateInvitationSerializer,
+    InvitationAcceptSerializer,
     InvitationSerializer,
     OrgMemberSerializer,
     OrgSerializer,
@@ -33,6 +34,7 @@ from apps.orgs.serializers import (
     UpdateMemberSerializer,
     UpdateOrgSerializer,
 )
+from apps.users.models import AccountType, User
 from helpers import get_user
 
 logger = logging.getLogger(__name__)
@@ -205,9 +207,7 @@ class OrgMemberDetailView(APIView):
 
     @extend_schema(request=None, responses={204: None}, tags=["orgs"])
     def delete(self, request: Request, org_id: UUID, member_user_id: UUID) -> Response:
-        """Remove a member — reverts their accountType and decrements Stripe seats."""
-        from apps.orgs.services import revert_to_personal
-
+        """Remove a member — decrements Stripe seats and hard-deletes their account."""
         user = get_user(request)
         _, caller = _get_org_and_member(user.id, org_id, allowed_roles=_ADMIN_OR_ABOVE)
         target = get_object_or_404(
@@ -227,57 +227,23 @@ class OrgMemberDetailView(APIView):
             target_role=CoreOrgRole(target.role),
         )
 
+        target_user = target.user
         target.delete()
-
-        # Revert removed user to personal + free plan
-        async_to_sync(revert_to_personal)(target.user)
 
         # Decrement seats on the Stripe subscription
         _decrement_subscription_seats(org_id)
+
+        # Hard-delete the removed user's account (CASCADE handles related models)
+        target_user.delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 def _decrement_subscription_seats(org_id: UUID) -> None:
     """Decrement the team subscription's seat count to match member count."""
-    from saasmint_core.services.subscriptions import update_seat_count
+    from apps.orgs.services import decrement_subscription_seats
 
-    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, StripeCustomer
-    from apps.billing.models import Subscription as SubscriptionModel
-
-    try:
-        customer = StripeCustomer.objects.get(org_id=org_id)
-    except StripeCustomer.DoesNotExist:
-        return
-
-    try:
-        sub = SubscriptionModel.objects.get(
-            stripe_customer=customer,
-            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-            stripe_id__isnull=False,
-        )
-    except SubscriptionModel.DoesNotExist:
-        return
-
-    if sub.stripe_id is None:
-        return
-
-    new_quantity = OrgMember.objects.filter(org_id=org_id, org__deleted_at__isnull=True).count()
-
-    if new_quantity < 1:
-        return
-
-    try:
-        async_to_sync(update_seat_count)(
-            stripe_subscription_id=sub.stripe_id,
-            quantity=new_quantity,
-        )
-    except Exception:
-        logger.exception(
-            "Failed to update seat count to %d for sub %s",
-            new_quantity,
-            sub.stripe_id,
-        )
+    decrement_subscription_seats(org_id)
 
 
 # ---------------------------------------------------------------------------
@@ -293,8 +259,6 @@ class OrgLeaveView(APIView):
 
     @extend_schema(request=None, responses={204: None}, tags=["orgs"])
     def post(self, request: Request, org_id: UUID) -> Response:
-        from apps.orgs.services import revert_to_personal
-
         user = get_user(request)
         _, member = _get_org_and_member(user.id, org_id)
 
@@ -304,8 +268,10 @@ class OrgLeaveView(APIView):
             )
 
         member.delete()
-        async_to_sync(revert_to_personal)(user)
         _decrement_subscription_seats(org_id)
+
+        # Hard-delete the user's account (CASCADE handles related models)
+        user.delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -397,14 +363,13 @@ class InvitationListCreateView(APIView):
         email = ser.validated_data["email"]
         role = ser.validated_data["role"]
 
-        # Cannot invite existing members
-        from apps.users.models import User
-
-        existing_user = User.objects.filter(email=email, deleted_at__isnull=True).first()
-        if existing_user and OrgMember.objects.filter(org=org, user=existing_user).exists():
+        # Cannot invite users who already have an account
+        if User.objects.filter(email=email, deleted_at__isnull=True).exists():
             from rest_framework.exceptions import ValidationError
 
-            raise ValidationError({"email": ["This user is already a member of this org."]})
+            raise ValidationError(
+                {"email": ["This email is already registered. Only new users can be invited."]}
+            )
 
         # Cannot invite someone with a pending invitation
         if Invitation.objects.filter(
@@ -499,16 +464,23 @@ class InvitationCancelView(APIView):
 
 
 class InvitationAcceptView(APIView):
-    """POST /api/v1/invitations/{token}/accept/ — accept an invitation."""
+    """POST /api/v1/invitations/{token}/accept/ — register and join an org.
 
+    Unauthenticated endpoint. The invitee provides registration data
+    (full_name, password) and is created as an org_member user.
+    """
+
+    permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "orgs"
+    throttle_scope = "auth"
 
-    @extend_schema(request=None, responses={200: OrgSerializer}, tags=["orgs"])
+    @extend_schema(
+        request=InvitationAcceptSerializer,
+        responses={201: OrgSerializer},
+        tags=["orgs"],
+    )
     def post(self, request: Request, token: str) -> Response:
-        from apps.orgs.services import _cancel_personal_subscription, revert_to_personal
-
-        user = get_user(request)
+        from apps.users.authentication import create_access_token, create_refresh_token
 
         invitation = get_object_or_404(Invitation, token=token, status=InvitationStatus.PENDING)
 
@@ -526,41 +498,54 @@ class InvitationAcceptView(APIView):
 
             raise ValidationError({"detail": "This organisation no longer exists."})
 
-        # Remove user from any existing org (safety for one-org rule)
-        existing_membership = OrgMember.objects.filter(user=user).select_related("user").first()
-        if existing_membership:
-            existing_membership.delete()
-            async_to_sync(revert_to_personal)(user)
-            user.refresh_from_db()
+        # Email must not already be registered
+        if User.objects.filter(email=invitation.email, deleted_at__isnull=True).exists():
+            from rest_framework.exceptions import ValidationError
 
-        # Cancel personal paid subscription with prorated refund
-        async_to_sync(_cancel_personal_subscription)(user.id)
+            raise ValidationError({"detail": "This email is already registered."})
 
-        # Create membership
+        ser = InvitationAcceptSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        # Create user + membership in a single transaction
         with transaction.atomic():
+            user = User.objects.create_user(
+                email=invitation.email,
+                password=ser.validated_data["password"],
+                full_name=ser.validated_data["full_name"],
+                account_type=AccountType.ORG_MEMBER,
+                is_verified=True,  # trusted: invited by existing member
+            )
             OrgMember.objects.create(
                 org=org,
                 user=user,
                 role=invitation.role,
             )
-            user.account_type = "org_member"
-            user.save(update_fields=["account_type"])
             invitation.status = InvitationStatus.ACCEPTED
             invitation.save(update_fields=["status"])
 
-        return Response(OrgSerializer(org).data)
+        refresh = create_refresh_token(user)
+        access = create_access_token(user)
+        return Response(
+            {
+                "org": OrgSerializer(org).data,
+                "access_token": access,
+                "refresh_token": refresh,
+                "token_type": "Bearer",
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class InvitationDeclineView(APIView):
     """POST /api/v1/invitations/{token}/decline/ — decline an invitation."""
 
+    permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "orgs"
 
     @extend_schema(request=None, responses={204: None}, tags=["orgs"])
     def post(self, request: Request, token: str) -> Response:
-        get_user(request)  # auth check
-
         invitation = get_object_or_404(Invitation, token=token, status=InvitationStatus.PENDING)
         invitation.status = InvitationStatus.CANCELLED
         invitation.save(update_fields=["status"])

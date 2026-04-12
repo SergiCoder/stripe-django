@@ -41,7 +41,7 @@ from apps.users.authentication import (
     verify_email_token,
     verify_password_reset_token,
 )
-from apps.users.models import User
+from apps.users.models import AccountType, User
 from helpers import get_user
 
 logger = logging.getLogger(__name__)
@@ -95,6 +95,58 @@ class RegisterView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
         assign_free_plan(user)
+
+        # Send verification email asynchronously via Celery
+        token = create_email_verification_token(user)
+        from apps.users.tasks import send_verification_email_task
+
+        send_verification_email_task.delay(user.email, token)
+
+        refresh = create_refresh_token(user)
+        return _token_response(user, refresh, http_status=status.HTTP_201_CREATED)
+
+
+class RegisterOrgOwnerView(APIView):
+    """POST /api/v1/auth/register/org-owner — register as an org owner.
+
+    Creates a user with account_type=ORG_MEMBER. No free plan is assigned;
+    the user must complete team checkout to create an org and subscription.
+    """
+
+    permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
+    throttle_scope = "auth"
+
+    @extend_schema(
+        request=RegisterSerializer,
+        responses={201: TokenResponseSerializer},
+        tags=["auth"],
+    )
+    def post(self, request: Request) -> Response:
+        ser = RegisterSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        email = ser.validated_data["email"]
+        if User.objects.filter(email=email).exists():
+            return Response(
+                {"detail": "Email already registered.", "code": "email_exists"},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        try:
+            with transaction.atomic():
+                user = User.objects.create_user(
+                    email=email,
+                    password=ser.validated_data["password"],
+                    full_name=ser.validated_data["full_name"],
+                    is_verified=False,
+                    account_type=AccountType.ORG_MEMBER,
+                )
+        except IntegrityError:
+            return Response(
+                {"detail": "Email already registered.", "code": "email_exists"},
+                status=status.HTTP_409_CONFLICT,
+            )
 
         # Send verification email asynchronously via Celery
         token = create_email_verification_token(user)

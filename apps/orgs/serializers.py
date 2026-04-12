@@ -77,5 +77,10 @@ class CreateInvitationSerializer(serializers.Serializer[Invitation]):
     role = serializers.ChoiceField(choices=_INVITABLE_ROLES, default=OrgRole.MEMBER)
 
 
+class InvitationAcceptSerializer(serializers.Serializer[Invitation]):
+    full_name = serializers.CharField(min_length=3, max_length=255)
+    password = serializers.CharField(min_length=8, max_length=128, write_only=True)
+
+
 class TransferOwnershipSerializer(serializers.Serializer[OrgMember]):
     user_id = serializers.UUIDField()

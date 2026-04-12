@@ -90,13 +90,21 @@ class AccountView(APIView):
         """
         from asgiref.sync import sync_to_async
 
-        from apps.orgs.services import delete_orgs_created_by_user
+        from apps.orgs.models import OrgMember
+        from apps.orgs.services import decrement_subscription_seats, delete_orgs_created_by_user
 
         customer_repo, subscription_repo = _billing_repos()
         user = get_user(request)
 
         async def _pre_delete(user_id: uuid.UUID) -> None:
+            # If owner: delete owned orgs (cascades member account deletion)
             await sync_to_async(delete_orgs_created_by_user)(user_id)
+            # If non-owner member: remove from org + decrement seats
+            membership = await OrgMember.objects.filter(user_id=user_id).afirst()
+            if membership:
+                org_id = membership.org_id
+                await membership.adelete()
+                await sync_to_async(decrement_subscription_seats)(org_id)
 
         scheduled_at = async_to_sync(request_account_deletion)(
             user_id=user.id,

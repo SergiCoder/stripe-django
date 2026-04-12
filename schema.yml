@@ -305,6 +305,39 @@ paths:
               schema:
                 $ref: '#/components/schemas/TokenResponse'
           description: ''
+  /api/v1/auth/register/org-owner/:
+    post:
+      operationId: auth_register_org_owner_create
+      description: |-
+        POST /api/v1/auth/register/org-owner — register as an org owner.
+
+        Creates a user with account_type=ORG_MEMBER. No free plan is assigned;
+        the user must complete team checkout to create an org and subscription.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+          description: ''
   /api/v1/auth/reset-password/:
     post:
       operationId: auth_reset_password_create
@@ -552,7 +585,11 @@ paths:
   /api/v1/invitations/{token}/accept/:
     post:
       operationId: invitations_accept_create
-      description: POST /api/v1/invitations/{token}/accept/ — accept an invitation.
+      description: |-
+        POST /api/v1/invitations/{token}/accept/ — register and join an org.
+
+        Unauthenticated endpoint. The invitee provides registration data
+        (full_name, password) and is created as an org_member user.
       parameters:
       - in: path
         name: token
@@ -561,11 +598,24 @@ paths:
         required: true
       tags:
       - orgs
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvitationAcceptRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/InvitationAcceptRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/InvitationAcceptRequest'
+        required: true
       security:
       - JWT: []
       - cookieAuth: []
+      - {}
       responses:
-        '200':
+        '201':
           content:
             application/json:
               schema:
@@ -586,6 +636,7 @@ paths:
       security:
       - JWT: []
       - cookieAuth: []
+      - {}
       responses:
         '204':
           description: No response body
@@ -893,8 +944,8 @@ paths:
           description: ''
     delete:
       operationId: orgs_members_destroy
-      description: Remove a member — reverts their accountType and decrements Stripe
-        seats.
+      description: Remove a member — decrements Stripe seats and hard-deletes their
+        account.
       parameters:
       - in: path
         name: member_user_id
@@ -1140,6 +1191,21 @@ components:
       - org
       - role
       - status
+    InvitationAcceptRequest:
+      type: object
+      properties:
+        full_name:
+          type: string
+          minLength: 3
+          maxLength: 255
+        password:
+          type: string
+          writeOnly: true
+          minLength: 8
+          maxLength: 128
+      required:
+      - full_name
+      - password
     InvitationStatusEnum:
       enum:
       - pending

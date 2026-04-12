@@ -109,7 +109,7 @@ class TestCheckoutSessionView:
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
     @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
     def test_trial_suppressed_for_team_plans(
-        self, mock_get_customer, mock_create, authed_client, mock_stripe_customer, db
+        self, mock_get_customer, mock_create, org_member_client, mock_stripe_customer, db
     ):
         team_plan = Plan.objects.create(
             name="Team Monthly", context="team", interval="month", is_active=True
@@ -120,7 +120,7 @@ class TestCheckoutSessionView:
         mock_get_customer.return_value = mock_stripe_customer
         mock_create.return_value = "https://checkout.stripe.com/session"
 
-        authed_client.post(
+        org_member_client.post(
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(team_price.id),
@@ -608,7 +608,7 @@ class TestQuantityValidationOnCheckout:
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
     @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
     def test_team_plan_with_min_seats_succeeds(
-        self, mock_get_customer, mock_create, authed_client, mock_stripe_customer, db
+        self, mock_get_customer, mock_create, org_member_client, mock_stripe_customer, db
     ):
         team_plan = Plan.objects.create(
             name="Team Min", context="team", interval="month", is_active=True
@@ -619,7 +619,7 @@ class TestQuantityValidationOnCheckout:
         mock_get_customer.return_value = mock_stripe_customer
         mock_create.return_value = "https://checkout.stripe.com/session"
 
-        resp = authed_client.post(
+        resp = org_member_client.post(
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(team_price.id),

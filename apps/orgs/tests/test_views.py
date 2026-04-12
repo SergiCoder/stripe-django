@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -135,20 +135,19 @@ class TestOrgDetailViewPATCH:
 @pytest.mark.django_db
 class TestOrgDetailViewDELETE:
     @patch("apps.orgs.services._cancel_team_subscription")
-    @patch("apps.orgs.services.revert_to_personal", new_callable=AsyncMock)
     def test_owner_can_delete_org(
-        self, mock_revert, mock_cancel_sub, authed_client, org, owner_membership
+        self, mock_cancel_sub, authed_client, org, owner_membership, user
     ):
         resp = authed_client.delete(f"/api/v1/orgs/{org.id}/")
         assert resp.status_code == 204
         org.refresh_from_db()
         assert org.deleted_at is not None
+        # Owner's account is hard-deleted
+        assert not User.objects.filter(id=user.id).exists()
 
     @patch("apps.orgs.services._cancel_team_subscription")
-    @patch("apps.orgs.services.revert_to_personal", new_callable=AsyncMock)
-    def test_delete_reverts_members_to_personal(
+    def test_delete_hard_deletes_all_members(
         self,
-        mock_revert,
         mock_cancel_sub,
         authed_client,
         org,
@@ -156,9 +155,14 @@ class TestOrgDetailViewDELETE:
         member_user,
         member_membership,
     ):
+        user_id = authed_client.handler._force_user.id
+        member_id = member_user.id
         resp = authed_client.delete(f"/api/v1/orgs/{org.id}/")
         assert resp.status_code == 204
-        assert mock_revert.call_count == 2  # owner + member
+        # Both owner and member accounts are hard-deleted
+        assert not User.objects.filter(id=user_id).exists()
+        assert not User.objects.filter(id=member_id).exists()
+        assert not OrgMember.objects.filter(org=org).exists()
 
     def test_admin_cannot_delete(self, admin_client, org, admin_membership, owner_membership):
         resp = admin_client.delete(f"/api/v1/orgs/{org.id}/")
@@ -253,10 +257,8 @@ class TestOrgMemberDetailViewPATCH:
 @pytest.mark.django_db
 class TestOrgMemberDetailViewDELETE:
     @patch("apps.orgs.views._decrement_subscription_seats")
-    @patch("apps.orgs.services.revert_to_personal", new_callable=AsyncMock)
-    def test_owner_removes_member(
+    def test_owner_removes_member_and_deletes_account(
         self,
-        mock_revert,
         mock_seats,
         authed_client,
         org,
@@ -264,20 +266,20 @@ class TestOrgMemberDetailViewDELETE:
         member_user,
         member_membership,
     ):
+        member_id = member_user.id
         resp = authed_client.delete(f"/api/v1/orgs/{org.id}/members/{member_user.id}/")
         assert resp.status_code == 204
-        assert not OrgMember.objects.filter(org=org, user=member_user).exists()
-        mock_revert.assert_called_once()
+        assert not OrgMember.objects.filter(org=org, user_id=member_id).exists()
+        # Member's user account is hard-deleted
+        assert not User.objects.filter(id=member_id).exists()
 
     def test_cannot_remove_owner(self, authed_client, org, owner_membership, user):
         resp = authed_client.delete(f"/api/v1/orgs/{org.id}/members/{user.id}/")
         assert resp.status_code == 403
 
     @patch("apps.orgs.views._decrement_subscription_seats")
-    @patch("apps.orgs.services.revert_to_personal", new_callable=AsyncMock)
     def test_admin_removes_member(
         self,
-        mock_revert,
         mock_seats,
         admin_client,
         org,
@@ -286,8 +288,10 @@ class TestOrgMemberDetailViewDELETE:
         member_user,
         member_membership,
     ):
+        member_id = member_user.id
         resp = admin_client.delete(f"/api/v1/orgs/{org.id}/members/{member_user.id}/")
         assert resp.status_code == 204
+        assert not User.objects.filter(id=member_id).exists()
 
     def test_admin_cannot_remove_owner(
         self, admin_client, org, owner_membership, admin_membership, user
@@ -316,10 +320,8 @@ class TestOrgMemberDetailViewDELETE:
 @pytest.mark.django_db
 class TestOrgLeaveView:
     @patch("apps.orgs.views._decrement_subscription_seats")
-    @patch("apps.orgs.services.revert_to_personal", new_callable=AsyncMock)
-    def test_member_can_leave(
+    def test_member_can_leave_and_account_deleted(
         self,
-        mock_revert,
         mock_seats,
         member_client,
         org,
@@ -327,16 +329,16 @@ class TestOrgLeaveView:
         member_user,
         member_membership,
     ):
+        member_id = member_user.id
         resp = member_client.post(f"/api/v1/orgs/{org.id}/leave/")
         assert resp.status_code == 204
-        assert not OrgMember.objects.filter(org=org, user=member_user).exists()
-        mock_revert.assert_called_once()
+        assert not OrgMember.objects.filter(org=org, user_id=member_id).exists()
+        # User account is hard-deleted
+        assert not User.objects.filter(id=member_id).exists()
 
     @patch("apps.orgs.views._decrement_subscription_seats")
-    @patch("apps.orgs.services.revert_to_personal", new_callable=AsyncMock)
-    def test_admin_can_leave(
+    def test_admin_can_leave_and_account_deleted(
         self,
-        mock_revert,
         mock_seats,
         admin_client,
         org,
@@ -344,9 +346,11 @@ class TestOrgLeaveView:
         admin_membership,
         admin_user,
     ):
+        admin_id = admin_user.id
         resp = admin_client.post(f"/api/v1/orgs/{org.id}/leave/")
         assert resp.status_code == 204
-        assert not OrgMember.objects.filter(org=org, user=admin_user).exists()
+        assert not OrgMember.objects.filter(org=org, user_id=admin_id).exists()
+        assert not User.objects.filter(id=admin_id).exists()
 
     def test_owner_cannot_leave(self, authed_client, org, owner_membership):
         resp = authed_client.post(f"/api/v1/orgs/{org.id}/leave/")
@@ -452,7 +456,7 @@ class TestInvitationListCreateView:
         assert resp.status_code == 403
 
     @patch("apps.orgs.tasks.send_invitation_email_task.delay")
-    def test_cannot_invite_existing_member(
+    def test_cannot_invite_existing_user(
         self, mock_email, authed_client, org, owner_membership, member_user, member_membership
     ):
         resp = authed_client.post(
@@ -544,74 +548,104 @@ class TestInvitationCancelView:
 
 @pytest.mark.django_db
 class TestInvitationAcceptView:
-    @patch("apps.orgs.services._cancel_personal_subscription", new_callable=AsyncMock)
-    def test_accept_invitation(self, mock_cancel, org, owner_membership, other_user, user):
+    def test_accept_invitation_registers_user(self, org, owner_membership, user):
+        """Accepting an invitation creates a new user account and joins the org."""
         invitation = Invitation.objects.create(
             org=org,
-            email=other_user.email,
+            email="newuser@example.com",
             role=OrgRole.MEMBER,
             token="accept-token",  # noqa: S106
             invited_by=user,
             expires_at=timezone.now() + timedelta(days=7),
         )
         client = APIClient()
-        client.force_authenticate(user=other_user)
-        resp = client.post("/api/v1/invitations/accept-token/accept/")
-        assert resp.status_code == 200
-        assert resp.data["name"] == org.name
-        assert OrgMember.objects.filter(org=org, user=other_user).exists()
+        resp = client.post(
+            "/api/v1/invitations/accept-token/accept/",
+            {"full_name": "New User", "password": "securepass123"},
+            format="json",
+        )
+        assert resp.status_code == 201
+        assert resp.data["org"]["name"] == org.name
+        assert "access_token" in resp.data
+        assert "refresh_token" in resp.data
+        # New user created as org_member
+        new_user = User.objects.get(email="newuser@example.com")
+        assert new_user.account_type == "org_member"
+        assert new_user.is_verified is True
+        assert OrgMember.objects.filter(org=org, user=new_user).exists()
         invitation.refresh_from_db()
         assert invitation.status == InvitationStatus.ACCEPTED
-        other_user.refresh_from_db()
-        assert other_user.account_type == "org_member"
 
-    def test_expired_invitation_rejected(self, org, owner_membership, other_user, user):
+    def test_accept_rejects_already_registered_email(self, org, owner_membership, user, other_user):
+        """Cannot accept if the invited email is already registered."""
         Invitation.objects.create(
             org=org,
             email=other_user.email,
+            role=OrgRole.MEMBER,
+            token="existing-email-token",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        client = APIClient()
+        resp = client.post(
+            "/api/v1/invitations/existing-email-token/accept/",
+            {"full_name": "Other", "password": "securepass123"},
+            format="json",
+        )
+        assert resp.status_code == 400
+
+    def test_expired_invitation_rejected(self, org, owner_membership, user):
+        Invitation.objects.create(
+            org=org,
+            email="expired@example.com",
             role=OrgRole.MEMBER,
             token="expired-token",  # noqa: S106
             invited_by=user,
             expires_at=timezone.now() - timedelta(days=1),
         )
         client = APIClient()
-        client.force_authenticate(user=other_user)
-        resp = client.post("/api/v1/invitations/expired-token/accept/")
+        resp = client.post(
+            "/api/v1/invitations/expired-token/accept/",
+            {"full_name": "Expired User", "password": "securepass123"},
+            format="json",
+        )
         assert resp.status_code == 400
 
-    def test_nonexistent_token_returns_404(self, other_user):
+    def test_nonexistent_token_returns_404(self):
         client = APIClient()
-        client.force_authenticate(user=other_user)
-        resp = client.post("/api/v1/invitations/nonexistent/accept/")
+        resp = client.post(
+            "/api/v1/invitations/nonexistent/accept/",
+            {"full_name": "Nobody", "password": "securepass123"},
+            format="json",
+        )
         assert resp.status_code == 404
 
-    def test_unauthenticated_rejected(self, org, owner_membership, user):
+    def test_missing_registration_data_rejected(self, org, owner_membership, user):
         Invitation.objects.create(
             org=org,
-            email="anon@example.com",
+            email="nodata@example.com",
             role=OrgRole.MEMBER,
-            token="anon-token",  # noqa: S106
+            token="nodata-token",  # noqa: S106
             invited_by=user,
             expires_at=timezone.now() + timedelta(days=7),
         )
         client = APIClient()
-        resp = client.post("/api/v1/invitations/anon-token/accept/")
-        assert resp.status_code in (401, 403)
+        resp = client.post("/api/v1/invitations/nodata-token/accept/", {}, format="json")
+        assert resp.status_code == 400
 
 
 @pytest.mark.django_db
 class TestInvitationDeclineView:
-    def test_decline_invitation(self, org, owner_membership, other_user, user):
+    def test_decline_invitation(self, org, owner_membership, user):
         invitation = Invitation.objects.create(
             org=org,
-            email=other_user.email,
+            email="decline@example.com",
             role=OrgRole.MEMBER,
             token="decline-token",  # noqa: S106
             invited_by=user,
             expires_at=timezone.now() + timedelta(days=7),
         )
-        client = APIClient()
-        client.force_authenticate(user=other_user)
+        client = APIClient()  # unauthenticated
         resp = client.post("/api/v1/invitations/decline-token/decline/")
         assert resp.status_code == 204
         invitation.refresh_from_db()

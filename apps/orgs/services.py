@@ -1,14 +1,13 @@
-"""Organisation lifecycle services — team checkout, member transitions, invitations."""
+"""Organisation lifecycle services — team checkout, member management, invitations."""
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 from uuid import UUID
 
 import stripe
-from asgiref.sync import async_to_sync, sync_to_async
+from asgiref.sync import async_to_sync
 from django.db import IntegrityError, transaction
 from django.utils.text import slugify
 
@@ -50,9 +49,11 @@ async def on_team_checkout_completed(
     """Create an org after a successful team plan checkout.
 
     Called from the checkout.session.completed webhook handler.
-    Creates the Org, adds the user as owner + billing contact,
-    updates account_type, and cancels any existing personal subscription.
+    The user already has account_type=ORG_MEMBER from registration.
+    Creates the Org and adds the user as owner + billing contact.
     """
+    from asgiref.sync import sync_to_async
+
     user = await User.objects.aget(id=user_id)
 
     try:
@@ -65,9 +66,6 @@ async def on_team_checkout_completed(
         )
         raise
 
-    # Cancel any existing personal subscription with prorated refund
-    await _cancel_personal_subscription(user_id)
-
     logger.info(
         "Team checkout completed: org '%s' (slug=%s) created for user %s",
         org_name,
@@ -77,7 +75,13 @@ async def on_team_checkout_completed(
 
 
 def _create_org_with_owner(user: User, org_name: str) -> tuple[Org, OrgMember]:
-    """Atomically create an org and its owner membership."""
+    """Atomically create an org and its owner membership.
+
+    The user must already have account_type=ORG_MEMBER (set at registration).
+    """
+    if user.account_type != AccountType.ORG_MEMBER:
+        raise ValueError(f"User {user.id} must have account_type=org_member to create an org")
+
     with transaction.atomic():
         slug = generate_unique_slug(org_name)
         org = Org.objects.create(
@@ -91,61 +95,7 @@ def _create_org_with_owner(user: User, org_name: str) -> tuple[Org, OrgMember]:
             role=OrgRole.OWNER,
             is_billing=True,
         )
-        user.account_type = AccountType.ORG_MEMBER
-        user.save(update_fields=["account_type"])
     return org, member
-
-
-async def _cancel_personal_subscription(user_id: UUID) -> None:
-    """Cancel a user's personal paid subscription with prorated refund, if any."""
-    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
-    from apps.billing.models import Subscription as SubscriptionModel
-
-    try:
-        sub = await SubscriptionModel.objects.aget(
-            user_id=user_id,
-            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-            stripe_id__isnull=False,
-        )
-    except SubscriptionModel.DoesNotExist:
-        return
-    except SubscriptionModel.MultipleObjectsReturned:
-        sub = await SubscriptionModel.objects.filter(
-            user_id=user_id,
-            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-            stripe_id__isnull=False,
-        ).alatest("created_at")
-
-    # Cancel immediately on Stripe (prorated refund happens automatically
-    # when proration_behavior is set). The DB record is synced via the
-    # customer.subscription.deleted webhook.
-    stripe_id: str = sub.stripe_id  # type: ignore[assignment]  # checked above via stripe_id__isnull=False
-    await asyncio.to_thread(
-        stripe.Subscription.cancel,
-        stripe_id,
-        prorate=True,
-    )
-
-    # Also delete the free subscription if any
-    await SubscriptionModel.objects.filter(user_id=user_id, stripe_id__isnull=True).adelete()
-
-    logger.info(
-        "Cancelled personal subscription %s for user %s (team join)",
-        sub.stripe_id,
-        user_id,
-    )
-
-
-async def revert_to_personal(user: User) -> None:
-    """Revert a user's account_type to personal and assign a free plan.
-
-    Used when a user leaves/is removed from an org.
-    """
-    from apps.billing.services import assign_free_plan
-
-    user.account_type = AccountType.PERSONAL
-    await user.asave(update_fields=["account_type"])
-    await sync_to_async(assign_free_plan)(user)
 
 
 async def cancel_pending_invitations_for_org(org_id: UUID) -> int:
@@ -157,27 +107,104 @@ async def cancel_pending_invitations_for_org(org_id: UUID) -> int:
 
 
 def delete_org(org: Org) -> None:
-    """Soft-delete an org: cancel Stripe subs, revert members, clear invitations."""
+    """Delete an org: cancel Stripe subs, hard-delete all member accounts.
+
+    Sequence: cancel Stripe sub → cancel invitations → soft-delete org →
+    delete memberships → hard-delete all member user accounts.
+    """
     from django.utils import timezone
 
     _cancel_team_subscription(org)
+    async_to_sync(cancel_pending_invitations_for_org)(org.id)
 
-    members = list(OrgMember.objects.filter(org=org).select_related("user"))
-    for member in members:
-        async_to_sync(revert_to_personal)(member.user)
+    # Collect member user IDs before deleting anything
+    member_user_ids = list(OrgMember.objects.filter(org=org).values_list("user_id", flat=True))
+
+    # Soft-delete org before hard-deleting users (created_by FK is SET_NULL)
+    org.deleted_at = timezone.now()
+    org.save(update_fields=["deleted_at"])
 
     OrgMember.objects.filter(org=org).delete()
+
+    # Hard-delete all member user accounts (CASCADE handles related models)
+    if member_user_ids:
+        User.objects.filter(id__in=member_user_ids).delete()
+
+
+def delete_orgs_created_by_user(user_id: UUID) -> None:
+    """Delete all active orgs created by a user (used during account deletion).
+
+    Skips hard-deleting the requesting user since GDPR flow handles that separately.
+    """
+    orgs = list(Org.objects.filter(created_by_id=user_id, deleted_at__isnull=True))
+    for org in orgs:
+        delete_org_excluding_user(org, exclude_user_id=user_id)
+
+
+def delete_org_excluding_user(org: Org, exclude_user_id: UUID) -> None:
+    """Delete an org but skip hard-deleting a specific user (the requester).
+
+    Used by GDPR deletion so the requesting user's deletion is handled
+    by the GDPR flow itself rather than being double-deleted here.
+    """
+    from django.utils import timezone
+
+    _cancel_team_subscription(org)
     async_to_sync(cancel_pending_invitations_for_org)(org.id)
+
+    member_user_ids = list(OrgMember.objects.filter(org=org).values_list("user_id", flat=True))
 
     org.deleted_at = timezone.now()
     org.save(update_fields=["deleted_at"])
 
+    OrgMember.objects.filter(org=org).delete()
 
-def delete_orgs_created_by_user(user_id: UUID) -> None:
-    """Soft-delete all active orgs created by a user (used during account deletion)."""
-    orgs = list(Org.objects.filter(created_by_id=user_id, deleted_at__isnull=True))
-    for org in orgs:
-        delete_org(org)
+    # Hard-delete all member accounts except the requesting user
+    ids_to_delete = [uid for uid in member_user_ids if uid != exclude_user_id]
+    if ids_to_delete:
+        User.objects.filter(id__in=ids_to_delete).delete()
+
+
+def decrement_subscription_seats(org_id: UUID) -> None:
+    """Decrement the team subscription's seat count to match member count."""
+    from saasmint_core.services.subscriptions import update_seat_count
+
+    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, StripeCustomer
+    from apps.billing.models import Subscription as SubscriptionModel
+
+    try:
+        customer = StripeCustomer.objects.get(org_id=org_id)
+    except StripeCustomer.DoesNotExist:
+        return
+
+    try:
+        sub = SubscriptionModel.objects.get(
+            stripe_customer=customer,
+            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
+            stripe_id__isnull=False,
+        )
+    except SubscriptionModel.DoesNotExist:
+        return
+
+    if sub.stripe_id is None:
+        return
+
+    new_quantity = OrgMember.objects.filter(org_id=org_id, org__deleted_at__isnull=True).count()
+
+    if new_quantity < 1:
+        return
+
+    try:
+        async_to_sync(update_seat_count)(
+            stripe_subscription_id=sub.stripe_id,
+            quantity=new_quantity,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to update seat count to %d for sub %s",
+            new_quantity,
+            sub.stripe_id,
+        )
 
 
 def _cancel_team_subscription(org: Org) -> None:

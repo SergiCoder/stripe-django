@@ -27,7 +27,9 @@ class Org(models.Model):
     logo_url = models.TextField(null=True, blank=True)  # noqa: DJ001  # nullable TextField intentional: NULL means no logo set (distinguishable from empty string)
     created_by = models.ForeignKey(
         "users.User",
-        on_delete=models.PROTECT,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="created_orgs",
     )
     created_at = models.DateTimeField(auto_now_add=True)

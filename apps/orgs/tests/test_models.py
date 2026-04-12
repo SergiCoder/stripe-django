@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-import django.db.models
 import pytest
 from django.db import IntegrityError
 
@@ -32,10 +31,11 @@ class TestOrg:
         org.refresh_from_db()
         assert org.deleted_at is not None
 
-    def test_created_by_protected(self, org, user):
-        """Deleting the user should be blocked because Org references them via PROTECT."""
-        with pytest.raises(django.db.models.ProtectedError):
-            user.delete()
+    def test_created_by_set_null_on_delete(self, org, user):
+        """Deleting the user sets Org.created_by to NULL (SET_NULL)."""
+        user.delete()
+        org.refresh_from_db()
+        assert org.created_by is None
 
 
 @pytest.mark.django_db

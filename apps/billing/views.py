@@ -49,6 +49,7 @@ from apps.billing.serializers import (
     SubscriptionSerializer,
     UpdateSubscriptionSerializer,
 )
+from apps.users.models import AccountType
 from helpers import get_user
 
 logger = logging.getLogger(__name__)
@@ -217,6 +218,17 @@ class CheckoutSessionView(APIView):
         quantity = _validate_quantity_for_plan(plan_price, data["quantity"])
 
         is_team = plan_price.plan.context == PlanContext.TEAM
+
+        # Enforce account_type / plan context match
+        if is_team and user.account_type != AccountType.ORG_MEMBER:
+            raise ValidationError(
+                {
+                    "detail": "Only org accounts can check out team plans. "
+                    "Register at /api/v1/auth/register/org-owner/ first."
+                }
+            )
+        if not is_team and user.account_type != AccountType.PERSONAL:
+            raise ValidationError({"detail": "Org accounts cannot check out personal plans."})
 
         # Team plans require org_name
         if is_team:

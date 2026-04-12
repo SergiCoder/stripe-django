@@ -212,6 +212,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.billing.tasks.sync_exchange_rates",
         "schedule": 86400,  # once per day
     },
+    "cleanup-orphaned-org-accounts": {
+        "task": "apps.users.tasks.cleanup_orphaned_org_accounts",
+        "schedule": 86400,  # once per day
+    },
 }
 
 # Stripe
