@@ -125,61 +125,14 @@ class OrgDetailView(APIView):
     @extend_schema(request=None, responses={204: None}, tags=["orgs"])
     def delete(self, request: Request, org_id: UUID) -> Response:
         """Delete org — cascades: cancels subscription, reverts members, clears invitations."""
-        from apps.orgs.services import cancel_pending_invitations_for_org, revert_to_personal
+        from apps.orgs.services import delete_org
 
         user = get_user(request)
         org, _ = _get_org_and_member(user.id, org_id, allowed_roles=_OWNER_ONLY)
 
-        members = list(OrgMember.objects.filter(org=org).select_related("user"))
-
-        # Cancel team subscription via Stripe (immediate)
-        _cancel_team_subscription(org)
-
-        # Revert all members to personal + free plan
-        for member in members:
-            async_to_sync(revert_to_personal)(member.user)
-
-        # Delete all memberships
-        OrgMember.objects.filter(org=org).delete()
-
-        # Cancel pending invitations
-        async_to_sync(cancel_pending_invitations_for_org)(org.id)
-
-        # Soft-delete the org
-        org.deleted_at = timezone.now()
-        org.save(update_fields=["deleted_at"])
+        delete_org(org)
 
         return Response(status=status.HTTP_204_NO_CONTENT)
-
-
-def _cancel_team_subscription(org: Org) -> None:
-    """Cancel the team subscription for an org via Stripe (immediate cancellation)."""
-    import stripe as stripe_lib
-
-    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, StripeCustomer
-    from apps.billing.models import Subscription as SubscriptionModel
-
-    try:
-        customer = StripeCustomer.objects.get(org=org)
-    except StripeCustomer.DoesNotExist:
-        return
-
-    subs = SubscriptionModel.objects.filter(
-        stripe_customer=customer,
-        status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-        stripe_id__isnull=False,
-    )
-    for sub in subs:
-        if sub.stripe_id is None:
-            continue
-        try:
-            stripe_lib.Subscription.cancel(sub.stripe_id)
-        except stripe_lib.StripeError:
-            logger.exception(
-                "Failed to cancel Stripe sub %s for org %s",
-                sub.stripe_id,
-                org.id,
-            )
 
 
 # ---------------------------------------------------------------------------

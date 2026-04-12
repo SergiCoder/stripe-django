@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -16,6 +16,10 @@ from saasmint_core.exceptions import UserNotFoundError
 from saasmint_core.repositories.customer import StripeCustomerRepository
 from saasmint_core.repositories.subscription import SubscriptionRepository
 from saasmint_core.repositories.user import UserRepository
+
+# Called before the user row is hard-deleted, to clean up
+# resources that hold a PROTECT FK to the user (e.g. orgs).
+PreDeleteHook = Callable[[UUID], Awaitable[None]]
 
 
 async def _stripe_request(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
@@ -48,6 +52,7 @@ async def request_account_deletion(
     user_repo: UserRepository,
     customer_repo: StripeCustomerRepository,
     subscription_repo: SubscriptionRepository,
+    pre_delete_hook: PreDeleteHook | None = None,
 ) -> datetime | None:
     """
     Request GDPR right-to-erasure account deletion.
@@ -81,6 +86,7 @@ async def request_account_deletion(
         user_repo=user_repo,
         customer_repo=customer_repo,
         subscription_repo=subscription_repo,
+        pre_delete_hook=pre_delete_hook,
     )
     return None
 
@@ -91,6 +97,7 @@ async def execute_account_deletion(
     user_repo: UserRepository,
     customer_repo: StripeCustomerRepository,
     subscription_repo: SubscriptionRepository,
+    pre_delete_hook: PreDeleteHook | None = None,
 ) -> None:
     """
     Execute GDPR right-to-erasure — permanently remove all user data.
@@ -102,7 +109,8 @@ async def execute_account_deletion(
     1. Cancel any active Stripe subscription immediately.
     2. Delete the Stripe Customer object (removes stored payment methods).
     3. Delete our StripeCustomer record.
-    4. Hard-delete the user row (cascades to OrgMember, etc.).
+    4. Run pre_delete_hook (e.g. soft-delete orgs with PROTECT FK).
+    5. Hard-delete the user row (cascades to OrgMember, etc.).
     """
     _user, customer = await _load_user_and_customer(user_id, user_repo, customer_repo)
 
@@ -114,6 +122,9 @@ async def execute_account_deletion(
     if customer:
         await _stripe_request(stripe.Customer.delete, customer.stripe_id)
         await customer_repo.delete(customer.id)
+
+    if pre_delete_hook:
+        await pre_delete_hook(user_id)
 
     await user_repo.hard_delete(user_id)
 

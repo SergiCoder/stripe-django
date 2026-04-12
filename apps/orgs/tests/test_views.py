@@ -134,7 +134,7 @@ class TestOrgDetailViewPATCH:
 
 @pytest.mark.django_db
 class TestOrgDetailViewDELETE:
-    @patch("apps.orgs.views._cancel_team_subscription")
+    @patch("apps.orgs.services._cancel_team_subscription")
     @patch("apps.orgs.services.revert_to_personal", new_callable=AsyncMock)
     def test_owner_can_delete_org(
         self, mock_revert, mock_cancel_sub, authed_client, org, owner_membership
@@ -144,7 +144,7 @@ class TestOrgDetailViewDELETE:
         org.refresh_from_db()
         assert org.deleted_at is not None
 
-    @patch("apps.orgs.views._cancel_team_subscription")
+    @patch("apps.orgs.services._cancel_team_subscription")
     @patch("apps.orgs.services.revert_to_personal", new_callable=AsyncMock)
     def test_delete_reverts_members_to_personal(
         self,

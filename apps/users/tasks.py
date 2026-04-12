@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import logging
+from uuid import UUID
 
-from asgiref.sync import async_to_sync
+from asgiref.sync import async_to_sync, sync_to_async
 
 from config.celery import app
 
@@ -44,6 +45,11 @@ def process_scheduled_deletions() -> None:
 
     pending_users = async_to_sync(user_repo.list_pending_deletions)()
 
+    async def _pre_delete(user_id: UUID) -> None:
+        from apps.orgs.services import delete_orgs_created_by_user
+
+        await sync_to_async(delete_orgs_created_by_user)(user_id)
+
     for user in pending_users:
         try:
             async_to_sync(execute_account_deletion)(
@@ -51,6 +57,7 @@ def process_scheduled_deletions() -> None:
                 user_repo=user_repo,
                 customer_repo=customer_repo,
                 subscription_repo=subscription_repo,
+                pre_delete_hook=_pre_delete,
             )
             logger.info("Executed scheduled deletion for user %s", user.id)
         except Exception:

@@ -88,13 +88,22 @@ class AccountView(APIView):
         Returns 200 with ``{"scheduled_deletion_at": "..."}`` if deletion is
         scheduled for the end of the current billing period.
         """
+        from asgiref.sync import sync_to_async
+
+        from apps.orgs.services import delete_orgs_created_by_user
+
         customer_repo, subscription_repo = _billing_repos()
         user = get_user(request)
+
+        async def _pre_delete(user_id: uuid.UUID) -> None:
+            await sync_to_async(delete_orgs_created_by_user)(user_id)
+
         scheduled_at = async_to_sync(request_account_deletion)(
             user_id=user.id,
             user_repo=_user_repo,
             customer_repo=customer_repo,
             subscription_repo=subscription_repo,
+            pre_delete_hook=_pre_delete,
         )
         if scheduled_at is not None:
             return Response(

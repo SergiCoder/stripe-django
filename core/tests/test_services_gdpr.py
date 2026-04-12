@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
@@ -626,3 +626,54 @@ async def test_export_user_data_with_subscription() -> None:
     assert "subscription" in result
     sub_data = result["subscription"]
     assert isinstance(sub_data, dict)
+
+
+# ── pre_delete_hook ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_execute_deletion_calls_pre_delete_hook() -> None:
+    """pre_delete_hook is invoked with user_id before the user row is deleted."""
+    user_repo = InMemoryUserRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    user = make_user()
+    await user_repo.save(user)
+
+    hook = AsyncMock()
+
+    await execute_account_deletion(
+        user_id=user.id,
+        user_repo=user_repo,
+        customer_repo=customer_repo,
+        subscription_repo=subscription_repo,
+        pre_delete_hook=hook,
+    )
+
+    hook.assert_awaited_once_with(user.id)
+    assert await user_repo.get_by_id(user.id) is None
+
+
+@pytest.mark.anyio
+async def test_request_deletion_passes_pre_delete_hook_through() -> None:
+    """request_account_deletion forwards pre_delete_hook to execute_account_deletion."""
+    user_repo = InMemoryUserRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    user = make_user()
+    await user_repo.save(user)
+
+    hook = AsyncMock()
+
+    result = await request_account_deletion(
+        user_id=user.id,
+        user_repo=user_repo,
+        customer_repo=customer_repo,
+        subscription_repo=subscription_repo,
+        pre_delete_hook=hook,
+    )
+
+    assert result is None
+    hook.assert_awaited_once_with(user.id)

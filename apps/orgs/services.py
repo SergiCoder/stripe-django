@@ -8,7 +8,7 @@ import re
 from uuid import UUID
 
 import stripe
-from asgiref.sync import sync_to_async
+from asgiref.sync import async_to_sync, sync_to_async
 from django.db import IntegrityError, transaction
 from django.utils.text import slugify
 
@@ -154,3 +154,55 @@ async def cancel_pending_invitations_for_org(org_id: UUID) -> int:
         status=InvitationStatus.CANCELLED
     )
     return count
+
+
+def delete_org(org: Org) -> None:
+    """Soft-delete an org: cancel Stripe subs, revert members, clear invitations."""
+    from django.utils import timezone
+
+    _cancel_team_subscription(org)
+
+    members = list(OrgMember.objects.filter(org=org).select_related("user"))
+    for member in members:
+        async_to_sync(revert_to_personal)(member.user)
+
+    OrgMember.objects.filter(org=org).delete()
+    async_to_sync(cancel_pending_invitations_for_org)(org.id)
+
+    org.deleted_at = timezone.now()
+    org.save(update_fields=["deleted_at"])
+
+
+def delete_orgs_created_by_user(user_id: UUID) -> None:
+    """Soft-delete all active orgs created by a user (used during account deletion)."""
+    orgs = list(Org.objects.filter(created_by_id=user_id, deleted_at__isnull=True))
+    for org in orgs:
+        delete_org(org)
+
+
+def _cancel_team_subscription(org: Org) -> None:
+    """Cancel the team subscription for an org via Stripe (immediate cancellation)."""
+    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, StripeCustomer
+    from apps.billing.models import Subscription as SubscriptionModel
+
+    try:
+        customer = StripeCustomer.objects.get(org=org)
+    except StripeCustomer.DoesNotExist:
+        return
+
+    subs = SubscriptionModel.objects.filter(
+        stripe_customer=customer,
+        status__in=ACTIVE_SUBSCRIPTION_STATUSES,
+        stripe_id__isnull=False,
+    )
+    for sub in subs:
+        if sub.stripe_id is None:
+            continue
+        try:
+            stripe.Subscription.cancel(sub.stripe_id)
+        except stripe.StripeError:
+            logger.exception(
+                "Failed to cancel Stripe sub %s for org %s",
+                sub.stripe_id,
+                org.id,
+            )
