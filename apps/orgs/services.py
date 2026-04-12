@@ -129,35 +129,10 @@ def delete_org(org: Org) -> None:
 
 
 def delete_orgs_created_by_user(user_id: UUID) -> None:
-    """Delete all active orgs created by a user (used during account deletion).
-
-    Skips hard-deleting the requesting user since GDPR flow handles that separately.
-    """
+    """Delete all active orgs created by a user (used during account deletion)."""
     orgs = list(Org.objects.filter(created_by_id=user_id, deleted_at__isnull=True))
     for org in orgs:
-        delete_org_excluding_user(org, exclude_user_id=user_id)
-
-
-def delete_org_excluding_user(org: Org, exclude_user_id: UUID) -> None:
-    """Delete an org but skip hard-deleting a specific user (the requester).
-
-    Used by GDPR deletion so the requesting user's deletion is handled
-    by the GDPR flow itself rather than being double-deleted here.
-    """
-    _cancel_team_subscription(org)
-    async_to_sync(cancel_pending_invitations_for_org)(org.id)
-
-    member_user_ids = list(OrgMember.objects.filter(org=org).values_list("user_id", flat=True))
-
-    OrgMember.objects.filter(org=org).delete()
-
-    # Hard-delete all member accounts except the requesting user
-    ids_to_delete = [uid for uid in member_user_ids if uid != exclude_user_id]
-    if ids_to_delete:
-        User.objects.filter(id__in=ids_to_delete).delete()
-
-    # Hard-delete the org itself
-    org.delete()
+        delete_org(org)
 
 
 def decrement_subscription_seats(org_id: UUID) -> None:
