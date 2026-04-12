@@ -90,18 +90,18 @@ class TestOrgAdminDeleteAction:
     ):
         owner_id = org_owner.id
         member_id = member.id
+        org_id = org.id
 
         resp = admin_client_django.post(
             "/admin/orgs/org/",
-            _action_payload([str(org.id)], confirm=True),
+            _action_payload([str(org_id)], confirm=True),
         )
         assert resp.status_code == 302  # redirect back to changelist
 
-        org.refresh_from_db()
-        assert org.deleted_at is not None
+        assert not Org.objects.filter(id=org_id).exists()
         assert not User.objects.filter(id=owner_id).exists()
         assert not User.objects.filter(id=member_id).exists()
-        assert not OrgMember.objects.filter(org=org).exists()
+        assert not OrgMember.objects.filter(org_id=org_id).exists()
 
     @patch("apps.orgs.services._cancel_team_subscription")
     def test_skips_already_deleted_orgs(

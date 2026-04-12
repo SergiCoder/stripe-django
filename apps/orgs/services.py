@@ -107,28 +107,25 @@ async def cancel_pending_invitations_for_org(org_id: UUID) -> int:
 
 
 def delete_org(org: Org) -> None:
-    """Delete an org: cancel Stripe subs, hard-delete all member accounts.
+    """Delete an org: cancel Stripe subs, hard-delete members and the org itself.
 
-    Sequence: cancel Stripe sub → cancel invitations → soft-delete org →
-    delete memberships → hard-delete all member user accounts.
+    Sequence: cancel Stripe sub → cancel invitations → collect member IDs →
+    delete memberships → hard-delete all member user accounts → hard-delete org.
     """
-    from django.utils import timezone
-
     _cancel_team_subscription(org)
     async_to_sync(cancel_pending_invitations_for_org)(org.id)
 
     # Collect member user IDs before deleting anything
     member_user_ids = list(OrgMember.objects.filter(org=org).values_list("user_id", flat=True))
 
-    # Soft-delete org before hard-deleting users (created_by FK is SET_NULL)
-    org.deleted_at = timezone.now()
-    org.save(update_fields=["deleted_at"])
-
     OrgMember.objects.filter(org=org).delete()
 
     # Hard-delete all member user accounts (CASCADE handles related models)
     if member_user_ids:
         User.objects.filter(id__in=member_user_ids).delete()
+
+    # Hard-delete the org itself
+    org.delete()
 
 
 def delete_orgs_created_by_user(user_id: UUID) -> None:
@@ -147,15 +144,10 @@ def delete_org_excluding_user(org: Org, exclude_user_id: UUID) -> None:
     Used by GDPR deletion so the requesting user's deletion is handled
     by the GDPR flow itself rather than being double-deleted here.
     """
-    from django.utils import timezone
-
     _cancel_team_subscription(org)
     async_to_sync(cancel_pending_invitations_for_org)(org.id)
 
     member_user_ids = list(OrgMember.objects.filter(org=org).values_list("user_id", flat=True))
-
-    org.deleted_at = timezone.now()
-    org.save(update_fields=["deleted_at"])
 
     OrgMember.objects.filter(org=org).delete()
 
@@ -163,6 +155,9 @@ def delete_org_excluding_user(org: Org, exclude_user_id: UUID) -> None:
     ids_to_delete = [uid for uid in member_user_ids if uid != exclude_user_id]
     if ids_to_delete:
         User.objects.filter(id__in=ids_to_delete).delete()
+
+    # Hard-delete the org itself
+    org.delete()
 
 
 def decrement_subscription_seats(org_id: UUID) -> None:
