@@ -202,7 +202,7 @@ class LoginView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        if not user.is_active or user.deleted_at is not None:
+        if not user.is_active:
             return Response(
                 {"detail": "Account is deactivated.", "code": "account_deactivated"},
                 status=status.HTTP_401_UNAUTHORIZED,
@@ -265,7 +265,6 @@ class ForgotPasswordView(APIView):
             user = User.objects.get(
                 email=ser.validated_data["email"],
                 is_active=True,
-                deleted_at__isnull=True,
             )
             token = create_password_reset_token(user)
             from apps.users.tasks import send_password_reset_email_task
@@ -427,8 +426,6 @@ class OAuthCallbackView(APIView):
                 headers={"Location": f"{frontend_url}/auth/error?error=account_deactivated"},
             )
 
-        # resolve_oauth_user already rejects deleted_at users via ValueError,
-        # but is_active is not checked there.
         if not user.is_active:
             return Response(
                 status=status.HTTP_302_FOUND,

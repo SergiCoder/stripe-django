@@ -355,7 +355,9 @@ class InvitationListCreateView(APIView):
         role = ser.validated_data["role"]
 
         # Cannot invite users who already have an account
-        if User.objects.filter(email=email, deleted_at__isnull=True).exists():
+        if User.objects.filter(
+            email=email,
+        ).exists():
             from rest_framework.exceptions import ValidationError
 
             raise ValidationError(
@@ -511,7 +513,9 @@ class InvitationAcceptView(APIView):
             raise ValidationError({"detail": "This organization no longer exists."})
 
         # Email must not already be registered
-        if User.objects.filter(email=invitation.email, deleted_at__isnull=True).exists():
+        if User.objects.filter(
+            email=invitation.email,
+        ).exists():
             from rest_framework.exceptions import ValidationError
 
             raise ValidationError({"detail": "This email is already registered."})

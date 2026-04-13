@@ -22,9 +22,8 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from saasmint_core.services.gdpr import (
-    cancel_account_deletion,
+    delete_account,
     export_user_data,
-    request_account_deletion,
 )
 
 from apps.users.repositories import DjangoUserRepository
@@ -78,15 +77,13 @@ class AccountView(APIView):
 
     @extend_schema(
         request=None,
-        responses={200: dict, 204: None},
+        responses={204: None},
         tags=["account"],
     )
     def delete(self, request: Request) -> Response:
         """DELETE /api/v1/account — GDPR right to erasure.
 
-        Returns 204 if the account was deleted immediately (no active subscription).
-        Returns 200 with ``{"scheduled_deletion_at": "..."}`` if deletion is
-        scheduled for the end of the current billing period.
+        Immediately hard-deletes the user and all associated data.
         """
         from asgiref.sync import sync_to_async
 
@@ -106,39 +103,14 @@ class AccountView(APIView):
                 await membership.adelete()
                 await sync_to_async(decrement_subscription_seats)(org_id)
 
-        scheduled_at = async_to_sync(request_account_deletion)(
+        async_to_sync(delete_account)(
             user_id=user.id,
             user_repo=_user_repo,
             customer_repo=customer_repo,
             subscription_repo=subscription_repo,
             pre_delete_hook=_pre_delete,
         )
-        if scheduled_at is not None:
-            return Response(
-                {"scheduled_deletion_at": scheduled_at.isoformat()},
-                status=status.HTTP_200_OK,
-            )
         return Response(status=status.HTTP_204_NO_CONTENT)
-
-
-class CancelDeletionView(APIView):
-    """POST /api/v1/account/cancel-deletion — undo scheduled account deletion."""
-
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
-    throttle_scope = "account"
-
-    @extend_schema(request=None, responses=UserSerializer, tags=["account"])
-    def post(self, request: Request) -> Response:
-        customer_repo, subscription_repo = _billing_repos()
-        user = get_user(request)
-        async_to_sync(cancel_account_deletion)(
-            user_id=user.id,
-            user_repo=_user_repo,
-            customer_repo=customer_repo,
-            subscription_repo=subscription_repo,
-        )
-        user.refresh_from_db()
-        return Response(UserSerializer(user).data)
 
 
 class AccountExportView(APIView):

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -46,52 +45,7 @@ async def _load_user_and_customer(
     return user, customer
 
 
-async def request_account_deletion(
-    *,
-    user_id: UUID,
-    user_repo: UserRepository,
-    customer_repo: StripeCustomerRepository,
-    subscription_repo: SubscriptionRepository,
-    pre_delete_hook: PreDeleteHook | None = None,
-) -> datetime | None:
-    """
-    Request GDPR right-to-erasure account deletion.
-
-    Returns:
-        None — account deleted immediately (no active subscription).
-        datetime — scheduled deletion date (subscription period end).
-    """
-    await _load_user_and_customer(user_id, user_repo, customer_repo)
-
-    active_sub = await subscription_repo.get_active_for_user(user_id)
-
-    # Free-plan subscriptions have no Stripe record — treat as
-    # "no subscription" so the account is deleted immediately.
-    if active_sub and not active_sub.is_free:
-        # Cancel renewal, schedule deletion for period end.
-        # 2026-03-25.dahlia: `cancel_at_period_end=True` → `cancel_at="min_period_end"`.
-        await _stripe_request(
-            stripe.Subscription.modify,
-            active_sub.stripe_id,
-            cancel_at="min_period_end",
-        )
-
-        scheduled_at = active_sub.current_period_end
-        await user_repo.schedule_deletion(user_id, scheduled_at)
-        return scheduled_at
-
-    # No active subscription — delete immediately
-    await execute_account_deletion(
-        user_id=user_id,
-        user_repo=user_repo,
-        customer_repo=customer_repo,
-        subscription_repo=subscription_repo,
-        pre_delete_hook=pre_delete_hook,
-    )
-    return None
-
-
-async def execute_account_deletion(
+async def delete_account(
     *,
     user_id: UUID,
     user_repo: UserRepository,
@@ -100,16 +54,13 @@ async def execute_account_deletion(
     pre_delete_hook: PreDeleteHook | None = None,
 ) -> None:
     """
-    Execute GDPR right-to-erasure — permanently remove all user data.
-
-    Called immediately when there is no active subscription, or by the
-    scheduled-deletion Celery task after the subscription period ends.
+    GDPR right-to-erasure — permanently remove all user data.
 
     Sequence:
     1. Cancel any active Stripe subscription immediately.
     2. Delete the Stripe Customer object (removes stored payment methods).
     3. Delete our StripeCustomer record.
-    4. Run pre_delete_hook (e.g. soft-delete orgs with PROTECT FK).
+    4. Run pre_delete_hook (e.g. delete orgs with PROTECT FK).
     5. Hard-delete the user row (cascades to OrgMember, etc.).
     """
     _user, customer = await _load_user_and_customer(user_id, user_repo, customer_repo)
@@ -127,36 +78,6 @@ async def execute_account_deletion(
         await pre_delete_hook(user_id)
 
     await user_repo.hard_delete(user_id)
-
-
-async def cancel_account_deletion(
-    *,
-    user_id: UUID,
-    user_repo: UserRepository,
-    customer_repo: StripeCustomerRepository,
-    subscription_repo: SubscriptionRepository,
-) -> None:
-    """
-    Cancel a previously scheduled account deletion.
-
-    Re-enables subscription renewal and clears the scheduled deletion date.
-    """
-    user, _ = await _load_user_and_customer(user_id, user_repo, customer_repo)
-
-    if user.scheduled_deletion_at is None:
-        return
-
-    # Re-enable subscription renewal (skip free subscriptions).
-    # 2026-03-25.dahlia: clear a scheduled cancellation by passing `cancel_at=""`.
-    active_sub = await subscription_repo.get_active_for_user(user_id)
-    if active_sub and not active_sub.is_free:
-        await _stripe_request(
-            stripe.Subscription.modify,
-            active_sub.stripe_id,
-            cancel_at="",
-        )
-
-    await user_repo.cancel_scheduled_deletion(user_id)
 
 
 async def export_user_data(

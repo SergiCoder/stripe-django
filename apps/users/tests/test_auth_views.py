@@ -192,23 +192,6 @@ class TestLoginView:
         # Django's authenticate returns None for inactive users
         assert resp.status_code == 401
 
-    def test_login_soft_deleted_user(self, api):
-        user = User.objects.create_user(
-            email="deleted@example.com",
-            password="testpass123",  # noqa: S106
-            full_name="Deleted",
-            is_verified=True,
-        )
-        user.deleted_at = datetime.now(UTC)
-        user.save()
-        resp = api.post(
-            self.URL,
-            {"email": "deleted@example.com", "password": "testpass123"},
-            format="json",
-        )
-        assert resp.status_code == 401
-        assert resp.data["code"] == "account_deactivated"
-
     def test_login_unverified_user(self, api):
         User.objects.create_user(
             email="unverified@example.com",
@@ -340,20 +323,6 @@ class TestForgotPasswordView:
         resp = api.post(self.URL, {"email": "nobody@example.com"}, format="json")
         # Always 200 to prevent email enumeration
         assert resp.status_code == 200
-
-    @patch("apps.users.tasks.send_password_reset_email_task.delay")
-    def test_forgot_password_deleted_user_not_sent(self, mock_delay, api):
-        user = User.objects.create_user(
-            email="del@example.com",
-            full_name="Deleted",
-            password="testpass123",  # noqa: S106
-        )
-        user.deleted_at = datetime.now(UTC)
-        user.save()
-
-        resp = api.post(self.URL, {"email": "del@example.com"}, format="json")
-        assert resp.status_code == 200
-        mock_delay.assert_not_called()
 
     @patch("apps.users.tasks.send_password_reset_email_task.delay")
     def test_forgot_password_email_failure_still_returns_200(self, mock_delay, api, verified_user):

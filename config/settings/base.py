@@ -204,10 +204,6 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "UTC"
 CELERY_BEAT_SCHEDULE = {
-    "process-scheduled-deletions": {
-        "task": "apps.users.tasks.process_scheduled_deletions",
-        "schedule": 3600,  # every hour
-    },
     "sync-exchange-rates": {
         "task": "apps.billing.tasks.sync_exchange_rates",
         "schedule": 86400,  # once per day
