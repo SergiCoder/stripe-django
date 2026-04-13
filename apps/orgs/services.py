@@ -110,6 +110,20 @@ def _create_org_with_owner(user: User, org_name: str) -> tuple[Org, OrgMember]:
     return org, member
 
 
+async def deactivate_org(org_id: UUID) -> None:
+    """Deactivate an org after its subscription is canceled.
+
+    Sets is_active=False and cancels pending invitations.
+    Called from the customer.subscription.deleted webhook handler.
+    """
+    updated = await Org.objects.filter(id=org_id, is_active=True).aupdate(is_active=False)
+    if updated:
+        await cancel_pending_invitations_for_org(org_id)
+        logger.info("Deactivated org %s after subscription cancellation", org_id)
+    else:
+        logger.warning("Org %s already inactive or not found", org_id)
+
+
 async def cancel_pending_invitations_for_org(org_id: UUID) -> int:
     """Cancel all pending invitations for an org. Returns count cancelled."""
     count = await Invitation.objects.filter(org_id=org_id, status=InvitationStatus.PENDING).aupdate(

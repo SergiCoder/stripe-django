@@ -18,6 +18,7 @@ class Org(BaseModel):
     name: str
     slug: str
     logo_url: str | None = None
+    is_active: bool = True
     created_by: UUID
     created_at: datetime
     deleted_at: datetime | None = None

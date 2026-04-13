@@ -32,6 +32,7 @@ class Org(models.Model):
         blank=True,
         related_name="created_orgs",
     )
+    is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
 

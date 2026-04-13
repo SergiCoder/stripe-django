@@ -56,10 +56,10 @@ def _get_org_and_member(
     """
     try:
         member = OrgMember.objects.select_related("org").get(
-            org_id=org_id, org__deleted_at__isnull=True, user_id=user_id
+            org_id=org_id, org__deleted_at__isnull=True, org__is_active=True, user_id=user_id
         )
     except OrgMember.DoesNotExist:
-        if not Org.objects.filter(id=org_id, deleted_at__isnull=True).exists():
+        if not Org.objects.filter(id=org_id, deleted_at__isnull=True, is_active=True).exists():
             raise OrgNotFoundError(org_id) from None
         raise InsufficientPermissionError("Access denied.") from None
     if allowed_roles is not None and OrgRole(member.role) not in allowed_roles:
@@ -91,6 +91,7 @@ class OrgListView(APIView):
         orgs = Org.objects.filter(
             id__in=OrgMember.objects.filter(user=user).values("org_id"),
             deleted_at__isnull=True,
+            is_active=True,
         ).order_by("name")
         paginator = LimitOffsetPagination()
         paginator.default_limit = 50

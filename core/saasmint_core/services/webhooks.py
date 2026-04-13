@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 # Args: user_id, org_name, stripe_customer_id, livemode, stripe_subscription_id
 OnTeamCheckoutCompleted = Callable[[UUID, str, str, bool, str | None], Awaitable[None]]
 
+# Callback type for org deactivation after subscription cancellation.
+# Args: org_id
+OnOrgSubscriptionCanceled = Callable[[UUID], Awaitable[None]]
+
 
 @dataclass(frozen=True)
 class WebhookRepos:
@@ -37,6 +41,7 @@ class WebhookRepos:
     customers: StripeCustomerRepository
     plans: PlanRepository
     on_team_checkout_completed: OnTeamCheckoutCompleted | None = field(default=None)
+    on_org_subscription_canceled: OnOrgSubscriptionCanceled | None = field(default=None)
 
 
 async def handle_stripe_event(
@@ -235,10 +240,19 @@ async def _on_subscription_deleted(sub_data: dict[str, Any], repos: WebhookRepos
     )
     await repos.subscriptions.save(canceled)
 
-    # Auto-fallback: personal users land back on the free plan so they keep
-    # using the product with free-tier limits. Org subs are skipped — there's
-    # no team-level free plan.
+    # Org subscriptions: deactivate the org so members lose access immediately.
     if existing.user_id is None:
+        if existing.stripe_customer_id is None:
+            return
+        customer = await repos.customers.get_by_id(existing.stripe_customer_id)
+        if customer is not None and customer.org_id is not None:
+            if repos.on_org_subscription_canceled is not None:
+                await repos.on_org_subscription_canceled(customer.org_id)
+            else:
+                logger.warning(
+                    "Org subscription %s canceled but no deactivation callback registered",
+                    stripe_sub_id,
+                )
         return
 
     free_plan = await repos.plans.get_free_plan()
