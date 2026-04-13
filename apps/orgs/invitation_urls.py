@@ -2,9 +2,14 @@
 
 from django.urls import path
 
-from apps.orgs.views import InvitationAcceptView, InvitationDeclineView
+from apps.orgs.views import InvitationAcceptView, InvitationDeclineView, InvitationDetailView
 
 urlpatterns = [
+    path(
+        "invitations/<str:token>/",
+        InvitationDetailView.as_view(),
+        name="invitation-detail",
+    ),
     path(
         "invitations/<str:token>/accept/",
         InvitationAcceptView.as_view(),

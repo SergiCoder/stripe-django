@@ -453,6 +453,27 @@ class InvitationCancelView(APIView):
 # ---------------------------------------------------------------------------
 
 
+class InvitationDetailView(APIView):
+    """GET /api/v1/invitations/{token}/ — fetch invitation details by token.
+
+    Unauthenticated endpoint. Returns invitation info including the
+    organization name so the accept/decline page can display it.
+    """
+
+    permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
+    throttle_scope = "orgs"
+
+    @extend_schema(responses={200: InvitationSerializer}, tags=["orgs"])
+    def get(self, request: Request, token: str) -> Response:
+        invitation = get_object_or_404(
+            Invitation.objects.select_related("org", "invited_by"),
+            token=token,
+            status=InvitationStatus.PENDING,
+        )
+        return Response(InvitationSerializer(invitation).data)
+
+
 class InvitationAcceptView(APIView):
     """POST /api/v1/invitations/{token}/accept/ — register and join an org.
 

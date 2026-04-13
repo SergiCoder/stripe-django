@@ -56,12 +56,14 @@ class _InvitedBySerializer(serializers.ModelSerializer[User]):
 
 class InvitationSerializer(serializers.ModelSerializer[Invitation]):
     invited_by = _InvitedBySerializer(read_only=True)
+    org_name = serializers.CharField(source="org.name", read_only=True)
 
     class Meta:
         model = Invitation
         fields = (
             "id",
             "org",
+            "org_name",
             "email",
             "role",
             "status",
