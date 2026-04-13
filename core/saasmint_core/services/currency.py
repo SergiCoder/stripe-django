@@ -131,7 +131,7 @@ def round_friendly(amount: float, currency: str) -> float:
         return float(rounded) if amount % step else amount
 
     whole = int(amount)
-    options = [whole + 0.49, whole + 0.99]
+    options = [whole + 0.49, whole + 0.99, whole + 1.49]
     if amount <= whole:
         options = [whole - 0.01, *options]
     candidates = [o for o in options if o >= amount]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Any
 from uuid import UUID
 
 import stripe
@@ -161,27 +162,38 @@ def delete_orgs_created_by_user(user_id: UUID) -> None:
         delete_org(org)
 
 
-def decrement_subscription_seats(org_id: UUID) -> None:
-    """Decrement the team subscription's seat count to match member count."""
-    from saasmint_core.services.subscriptions import update_seat_count
+def _get_active_stripe_subs(org_id: UUID) -> list[Any]:
+    """Return active Stripe-backed subscriptions for an org.
 
+    Shared by seat decrement and subscription cancellation to avoid
+    duplicating the StripeCustomer → Subscription lookup.
+    """
     from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, StripeCustomer
     from apps.billing.models import Subscription as SubscriptionModel
 
     try:
         customer = StripeCustomer.objects.get(org_id=org_id)
     except StripeCustomer.DoesNotExist:
-        return
+        return []
 
-    try:
-        sub = SubscriptionModel.objects.get(
+    return list(
+        SubscriptionModel.objects.filter(
             stripe_customer=customer,
             status__in=ACTIVE_SUBSCRIPTION_STATUSES,
             stripe_id__isnull=False,
         )
-    except SubscriptionModel.DoesNotExist:
+    )
+
+
+def decrement_subscription_seats(org_id: UUID) -> None:
+    """Decrement the team subscription's seat count to match member count."""
+    from saasmint_core.services.subscriptions import update_seat_count
+
+    subs = _get_active_stripe_subs(org_id)
+    if not subs:
         return
 
+    sub = subs[0]
     if sub.stripe_id is None:
         return
 
@@ -205,20 +217,7 @@ def decrement_subscription_seats(org_id: UUID) -> None:
 
 def _cancel_team_subscription(org: Org) -> None:
     """Cancel the team subscription for an org via Stripe (immediate cancellation)."""
-    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, StripeCustomer
-    from apps.billing.models import Subscription as SubscriptionModel
-
-    try:
-        customer = StripeCustomer.objects.get(org=org)
-    except StripeCustomer.DoesNotExist:
-        return
-
-    subs = SubscriptionModel.objects.filter(
-        stripe_customer=customer,
-        status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-        stripe_id__isnull=False,
-    )
-    for sub in subs:
+    for sub in _get_active_stripe_subs(org.id):
         if sub.stripe_id is None:
             continue
         try:

@@ -11,8 +11,10 @@ from uuid import UUID
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from drf_spectacular.utils import OpenApiParameter, extend_schema
+from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
+from rest_framework import serializers as drf_serializers
 from rest_framework import status
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.pagination import LimitOffsetPagination
 from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
@@ -101,7 +103,7 @@ class OrgListView(APIView):
 
 
 class OrgDetailView(APIView):
-    """GET/PATCH/DELETE /api/v1/orgs/{org_id}/."""
+    """GET/PATCH /api/v1/orgs/{org_id}/."""
 
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "orgs"
@@ -218,23 +220,18 @@ class OrgMemberDetailView(APIView):
             target_role=CoreOrgRole(target.role),
         )
 
+        from apps.orgs.services import decrement_subscription_seats
+
         target_user = target.user
         target.delete()
 
         # Decrement seats on the Stripe subscription
-        _decrement_subscription_seats(org_id)
+        decrement_subscription_seats(org_id)
 
         # Hard-delete the removed user's account (CASCADE handles related models)
         target_user.delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
-
-
-def _decrement_subscription_seats(org_id: UUID) -> None:
-    """Decrement the team subscription's seat count to match member count."""
-    from apps.orgs.services import decrement_subscription_seats
-
-    decrement_subscription_seats(org_id)
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +300,7 @@ class InvitationListCreateView(APIView):
         _get_org_and_member(user.id, org_id, allowed_roles=_ADMIN_OR_ABOVE)
         invitations = (
             Invitation.objects.filter(org_id=org_id, status=InvitationStatus.PENDING)
-            .select_related("invited_by")
+            .select_related("org", "invited_by")
             .order_by("-created_at")
         )
         return Response(InvitationSerializer(invitations, many=True).data)
@@ -328,9 +325,7 @@ class InvitationListCreateView(APIView):
         if User.objects.filter(
             email=email,
         ).exists():
-            from rest_framework.exceptions import ValidationError
-
-            raise ValidationError(
+            raise DRFValidationError(
                 {"email": ["This email is already registered. Only new users can be invited."]}
             )
 
@@ -338,9 +333,7 @@ class InvitationListCreateView(APIView):
         if Invitation.objects.filter(
             org=org, email=email, status=InvitationStatus.PENDING
         ).exists():
-            from rest_framework.exceptions import ValidationError
-
-            raise ValidationError(
+            raise DRFValidationError(
                 {"email": ["A pending invitation already exists for this email."]}
             )
 
@@ -395,9 +388,7 @@ def _validate_seat_limit(org: Org) -> None:
     ).count()
 
     if current_members + pending_invitations >= sub.quantity:
-        from rest_framework.exceptions import ValidationError
-
-        raise ValidationError(
+        raise DRFValidationError(
             {"detail": "Org has reached its seat limit. Upgrade your plan to invite more members."}
         )
 
@@ -460,7 +451,17 @@ class InvitationAcceptView(APIView):
 
     @extend_schema(
         request=InvitationAcceptSerializer,
-        responses={201: OrgSerializer},
+        responses={
+            201: inline_serializer(
+                "InvitationAcceptResponse",
+                {
+                    "org": OrgSerializer(),
+                    "access_token": drf_serializers.CharField(),
+                    "refresh_token": drf_serializers.CharField(),
+                    "token_type": drf_serializers.CharField(),
+                },
+            )
+        },
         tags=["orgs"],
     )
     def post(self, request: Request, token: str) -> Response:
@@ -472,23 +473,17 @@ class InvitationAcceptView(APIView):
         if invitation.expires_at < timezone.now():
             invitation.status = InvitationStatus.EXPIRED
             invitation.save(update_fields=["status"])
-            from rest_framework.exceptions import ValidationError
-
-            raise ValidationError({"detail": "This invitation has expired."})
+            raise DRFValidationError({"detail": "This invitation has expired."})
 
         org = invitation.org
-        if org.deleted_at is not None:
-            from rest_framework.exceptions import ValidationError
-
-            raise ValidationError({"detail": "This organization no longer exists."})
+        if org.deleted_at is not None or not org.is_active:
+            raise DRFValidationError({"detail": "This organization no longer exists."})
 
         # Email must not already be registered
         if User.objects.filter(
             email=invitation.email,
         ).exists():
-            from rest_framework.exceptions import ValidationError
-
-            raise ValidationError({"detail": "This email is already registered."})
+            raise DRFValidationError({"detail": "This email is already registered."})
 
         ser = InvitationAcceptSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
