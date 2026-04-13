@@ -566,9 +566,9 @@ class TestProductListView:
         self, authed_client, product, product_price
     ):
         resp = authed_client.get("/api/v1/billing/products/")
-        price = resp.data[0]["price"]
-        assert price["currency"] == "usd"
-        assert price["display_amount"] == 9.99
+        match = next(p for p in resp.data if p["name"] == "100 Credits")
+        assert match["price"]["currency"] == "usd"
+        assert match["price"]["display_amount"] == 9.99
 
     def test_unauthenticated_rejected(self, product, product_price):
         client = APIClient()
