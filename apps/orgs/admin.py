@@ -1,11 +1,13 @@
 """Admin registration for the orgs app."""
 
 import logging
+from uuid import UUID
 
 from django.contrib import admin
 from django.db.models import Count, QuerySet
-from django.http import HttpRequest, HttpResponse
+from django.http import Http404, HttpRequest, HttpResponse, HttpResponseRedirect
 from django.template.response import TemplateResponse
+from django.urls import URLPattern, path, reverse
 
 from apps.orgs.models import Invitation, Org, OrgMember
 
@@ -20,6 +22,50 @@ class OrgAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs gene
     readonly_fields = ("id", "created_at")
     list_select_related = ("created_by",)
     actions = ["delete_org_action"]  # noqa: RUF012
+
+    def get_urls(self) -> list[URLPattern]:
+        custom_urls = [
+            path(
+                "<uuid:pk>/delete-org/",
+                self.admin_site.admin_view(self.delete_org_view),
+                name="orgs_org_delete_org",
+            ),
+        ]
+        return custom_urls + super().get_urls()
+
+    def delete_org_view(self, request: HttpRequest, pk: UUID) -> HttpResponse:
+        from apps.orgs.services import delete_org
+
+        org = self.get_object(request, str(pk))
+        if org is None:
+            raise Http404
+
+        qs = (
+            Org.objects.filter(pk=pk)
+            .select_related("created_by")
+            .annotate(
+                member_count=Count("members"),
+            )
+        )
+
+        if request.method == "POST" and "confirm" in request.POST:
+            delete_org(org)
+            logger.info("Admin %s deleted org %s (%s)", request.user, org.slug, org.id)
+            msg = f"Deleted org '{org.name}' and all associated member accounts."
+            self.message_user(request, msg)
+            return HttpResponseRedirect(reverse("admin:orgs_org_changelist"))
+
+        return TemplateResponse(
+            request,
+            "admin/orgs/delete_org_confirmation.html",
+            {
+                **self.admin_site.each_context(request),
+                "title": f"Confirm deletion of {org.name}",
+                "orgs": qs,
+                "opts": self.model._meta,
+                "single_org": True,
+            },
+        )
 
     def has_delete_permission(self, request: HttpRequest, obj: Org | None = None) -> bool:
         # Disable built-in delete (detail page button + bulk action) — it bypasses
