@@ -91,6 +91,11 @@ STRIPE_WEBHOOK_SECRET=whsec_CHANGE_ME
 RESEND_API_KEY=re_CHANGE_ME
 EMAIL_FROM_ADDRESS=noreply@saasmint.net
 FRONTEND_URL=https://app.saasmint.net
+
+# SaasMint App (frontend)
+NEXT_PUBLIC_API_URL=https://api.saasmint.net
+NEXT_PUBLIC_APP_URL=https://app.saasmint.net
+NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_CHANGE_ME
 ENVEOF
     chown "$DEPLOY_USER:$DEPLOY_USER" "$SAASMINT_DIR/.env.dev"
     echo "  Created $SAASMINT_DIR/.env.dev — fill in real values before first deploy."
