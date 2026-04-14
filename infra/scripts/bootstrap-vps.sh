@@ -77,7 +77,7 @@ ALLOWED_HOSTS=["api.saasmint.net"]
 CSRF_TRUSTED_ORIGINS=["https://api.saasmint.net","https://app.saasmint.net"]
 CORS_ALLOWED_ORIGINS=["https://app.saasmint.net"]
 CORS_ALLOW_ALL_ORIGINS=false
-ENABLE_SESSION_AUTH=false
+ENABLE_SESSION_AUTH=true
 
 POSTGRES_DB=saasmint
 POSTGRES_USER=saasmint
