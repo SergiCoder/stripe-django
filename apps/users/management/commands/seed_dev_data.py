@@ -356,6 +356,8 @@ class Command(BaseCommand):
         alphabet = string.ascii_letters + string.digits + string.punctuation
         self._seed_password = "".join(secrets.choice(alphabet) for _ in range(20))
 
+        call_command("seed_catalog")
+
         with transaction.atomic():
             plans = self._seed_plans()
             users = self._seed_users(plans)
