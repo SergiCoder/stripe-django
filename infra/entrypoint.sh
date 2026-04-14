@@ -7,6 +7,9 @@ uv run python manage.py migrate --no-input
 echo "==> Seeding catalog (plans, products)..."
 uv run python manage.py seed_catalog
 
+echo "==> Syncing Stripe catalog (idempotent)..."
+uv run python manage.py sync_stripe_catalog
+
 echo "==> Collecting static files..."
 uv run python manage.py collectstatic --no-input
 

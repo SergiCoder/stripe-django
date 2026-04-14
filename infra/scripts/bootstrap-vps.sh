@@ -36,19 +36,26 @@ fi
 echo "==> [3/7] Setting up SSH key for deploy user..."
 DEPLOY_SSH_DIR="/home/$DEPLOY_USER/.ssh"
 mkdir -p "$DEPLOY_SSH_DIR"
-if [ ! -f "$DEPLOY_SSH_DIR/id_ed25519" ]; then
-    ssh-keygen -t ed25519 -f "$DEPLOY_SSH_DIR/id_ed25519" -N "" -C "deploy@$(hostname)"
-    cat "$DEPLOY_SSH_DIR/id_ed25519.pub" >> "$DEPLOY_SSH_DIR/authorized_keys"
+if [ ! -f "$DEPLOY_SSH_DIR/authorized_keys" ] || ! grep -q "deploy@" "$DEPLOY_SSH_DIR/authorized_keys" 2>/dev/null; then
+    TMP_KEY="$(mktemp -d)/id_ed25519"
+    ssh-keygen -t ed25519 -f "$TMP_KEY" -N "" -C "deploy@$(hostname)" -q
+    cat "${TMP_KEY}.pub" >> "$DEPLOY_SSH_DIR/authorized_keys"
     chmod 700 "$DEPLOY_SSH_DIR"
-    chmod 600 "$DEPLOY_SSH_DIR/authorized_keys" "$DEPLOY_SSH_DIR/id_ed25519"
+    chmod 600 "$DEPLOY_SSH_DIR/authorized_keys"
     chown -R "$DEPLOY_USER:$DEPLOY_USER" "$DEPLOY_SSH_DIR"
     echo ""
     echo "  ===== PRIVATE KEY (add to GitHub secrets as VPS_SSH_KEY) ====="
-    cat "$DEPLOY_SSH_DIR/id_ed25519"
+    echo "  WARNING: copy the key below NOW — it will be destroyed after this script exits."
+    echo "  Do NOT log this output, pipe it to a file, or run this script under 'script'/'tee'."
+    echo ""
+    cat "$TMP_KEY"
     echo "  ==============================================================="
     echo ""
+    # Shred the private key so a later VPS compromise cannot leak it.
+    shred -u "$TMP_KEY" "${TMP_KEY}.pub" 2>/dev/null || rm -f "$TMP_KEY" "${TMP_KEY}.pub"
+    rmdir "$(dirname "$TMP_KEY")" 2>/dev/null || true
 else
-    echo "  SSH key already exists, skipping."
+    echo "  Deploy SSH key already authorized, skipping."
 fi
 
 echo "==> [4/7] Creating $SAASMINT_DIR and cloning repos..."
