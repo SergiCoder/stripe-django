@@ -60,6 +60,14 @@ class Plan(models.Model):
                 name="uniq_active_plan_per_context_tier_interval",
             ),
         ]
+        indexes = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
+            # Hot path for PlanListView: filter by `context` among active plans.
+            models.Index(
+                fields=["context"],
+                name="idx_plan_active_context",
+                condition=models.Q(is_active=True),
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.name} ({self.interval})"
@@ -190,6 +198,14 @@ class Product(models.Model):
 
     class Meta:
         db_table = "products"
+        indexes = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
+            # Hot path for ProductListView: fetching active products only.
+            models.Index(
+                fields=["is_active"],
+                name="idx_product_active",
+                condition=models.Q(is_active=True),
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.name} ({self.credits} credits)"

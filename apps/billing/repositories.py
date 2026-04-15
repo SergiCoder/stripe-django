@@ -320,8 +320,10 @@ class DjangoStripeEventRepository:
 
     async def list_recent(self, limit: int = 50) -> list[StripeEvent]:
         capped = min(limit, 100)
-        qs = StripeEventModel.objects.order_by("-created_at")[:capped]
-        return [self._to_domain(obj) async for obj in qs]
+        return [
+            self._to_domain(obj)
+            async for obj in StripeEventModel.objects.order_by("-created_at")[:capped]
+        ]
 
 
 def get_webhook_repos() -> WebhookRepos:

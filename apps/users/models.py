@@ -98,6 +98,13 @@ class RefreshToken(models.Model):
         db_table = "refresh_tokens"
         indexes: ClassVar[list[Index]] = [
             models.Index(fields=["user", "-created_at"], name="idx_refresh_user_created"),
+            # Live-token lookup: partial index over non-revoked rows keeps the
+            # tree tiny since revocations are permanent and accumulate.
+            models.Index(
+                fields=["user"],
+                name="idx_refresh_user_active",
+                condition=models.Q(revoked_at__isnull=True),
+            ),
         ]
 
     def __str__(self) -> str:

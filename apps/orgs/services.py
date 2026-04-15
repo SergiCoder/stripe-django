@@ -33,13 +33,20 @@ def generate_unique_slug(name: str) -> str:
     if len(base) < 2:
         base = "org"
 
-    slug = base
+    # Pull every existing variant in one query (`base`, `base-2`, `base-3`, ...)
+    # and pick the lowest free suffix. Avoids O(N) `exists()` calls for hot slugs.
+    existing = set(
+        Org.objects.filter(
+            slug__regex=rf"^{re.escape(base)}(-\d+)?$",
+            deleted_at__isnull=True,
+        ).values_list("slug", flat=True)
+    )
+    if base not in existing:
+        return base
     suffix = 2
-    while Org.objects.filter(slug=slug, deleted_at__isnull=True).exists():
-        slug = f"{base}-{suffix}"
+    while f"{base}-{suffix}" in existing:
         suffix += 1
-
-    return slug
+    return f"{base}-{suffix}"
 
 
 async def on_team_checkout_completed(
@@ -163,27 +170,23 @@ def delete_org(org: Org) -> None:
 
         async_to_sync(cancel_pending_invitations_for_org)(org_id)
 
-        member_user_ids = list(OrgMember.objects.filter(org=org).values_list("user_id", flat=True))
-        OrgMember.objects.filter(org=org).delete()
+        # Push the member_user_id set into the DB via a Subquery instead of
+        # materializing thousands of UUIDs into Python for the IN clause.
+        from django.db.models import Subquery
 
-        if member_user_ids:
-            User.objects.filter(id__in=member_user_ids).delete()
+        member_user_ids_sq = OrgMember.objects.filter(org=org).values("user_id")
+        User.objects.filter(id__in=Subquery(member_user_ids_sq)).delete()
+        OrgMember.objects.filter(org=org).delete()
 
         org.delete()
 
-        transaction.on_commit(lambda: _cancel_stripe_subs(stripe_sub_ids, org_id))
+        # Offload Stripe cancellations to Celery so the request returns
+        # immediately instead of blocking on N sequential Stripe round-trips.
+        if stripe_sub_ids:
+            from apps.orgs.tasks import cancel_stripe_subs_task
 
-
-def _cancel_stripe_subs(stripe_sub_ids: list[str], org_id: UUID) -> None:
-    """Cancel a batch of Stripe subscriptions (post-commit hook for delete_org)."""
-    for sub_id in stripe_sub_ids:
-        try:
-            stripe.Subscription.cancel(sub_id)
-        except stripe.StripeError:
-            logger.exception(
-                "Failed to cancel Stripe sub %s for org %s",
-                sub_id,
-                org_id,
+            transaction.on_commit(
+                lambda: cancel_stripe_subs_task.delay(stripe_sub_ids, str(org_id))
             )
 
 
