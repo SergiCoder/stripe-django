@@ -1,13 +1,24 @@
 """Production settings — debug off, strict security headers."""
 
+import re
+
 from django.core.exceptions import ImproperlyConfigured
 
 from config.settings.base import *  # noqa: F403  # star import intentional for settings inheritance pattern
 
 DEBUG = False
 
-if not ALLOWED_HOSTS or "*" in ALLOWED_HOSTS:  # noqa: F405  # ALLOWED_HOSTS imported via star import above; F405 expected
-    raise ImproperlyConfigured("ALLOWED_HOSTS must be explicitly set in production (no wildcards).")
+_HOST_RE = re.compile(r"^(?!-)[a-zA-Z0-9-]{1,63}(?<!-)(\.(?!-)[a-zA-Z0-9-]{1,63}(?<!-))*$")
+
+if not ALLOWED_HOSTS:  # noqa: F405  # ALLOWED_HOSTS imported via star import above; F405 expected
+    raise ImproperlyConfigured("ALLOWED_HOSTS must be explicitly set in production.")
+for _host in ALLOWED_HOSTS:  # noqa: F405
+    # Reject wildcards (including leading-dot subdomain wildcards like ".example.com")
+    # and anything that isn't a plain hostname. Prevents Host-header attacks.
+    if "*" in _host or not _HOST_RE.match(_host.lstrip(".")):
+        raise ImproperlyConfigured(
+            f"ALLOWED_HOSTS entry {_host!r} is not a valid hostname (no wildcards allowed)."
+        )
 
 SECURE_HSTS_SECONDS = 31536000
 SECURE_HSTS_INCLUDE_SUBDOMAINS = True
@@ -23,3 +34,10 @@ CSRF_COOKIE_SECURE = True
 CSRF_COOKIE_HTTPONLY = True
 CSRF_COOKIE_SAMESITE = "Lax"
 CORS_ALLOW_ALL_ORIGINS = False
+
+if not CSRF_TRUSTED_ORIGINS:  # noqa: F405
+    # Secure cookies + empty CSRF_TRUSTED_ORIGINS locks out browser-based
+    # cross-origin POSTs from the frontend. Require explicit configuration.
+    raise ImproperlyConfigured(
+        "CSRF_TRUSTED_ORIGINS must be set in production (required with SESSION_COOKIE_SECURE=True)."
+    )

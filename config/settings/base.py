@@ -34,6 +34,7 @@ class _Env(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     database_url: str = "postgresql://localhost:5432/saasmint"
     debug: bool = False
+    schema_public: bool = False  # expose /api/schema, /api/docs, /api/redoc outside DEBUG
     allowed_hosts: list[str] = []
     cors_allowed_origins: list[str] = []
     cors_allow_all_origins: bool = False
@@ -73,6 +74,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 SECRET_KEY = env.django_secret_key
 DEBUG = env.debug
+SCHEMA_PUBLIC = env.schema_public
 ALLOWED_HOSTS = env.allowed_hosts
 
 INSTALLED_APPS = [
@@ -210,6 +212,10 @@ CELERY_BEAT_SCHEDULE = {
     },
     "cleanup-orphaned-org-accounts": {
         "task": "apps.users.tasks.cleanup_orphaned_org_accounts",
+        "schedule": 86400,  # once per day
+    },
+    "cleanup-expired-refresh-tokens": {
+        "task": "apps.users.tasks.cleanup_expired_refresh_tokens",
         "schedule": 86400,  # once per day
     },
 }
