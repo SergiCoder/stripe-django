@@ -51,7 +51,9 @@ def assign_free_plan(user: User) -> None:
 
     Idempotent under concurrent register/OAuth races: the atomic+get_or_create
     pair prevents two parallel callers from both creating a free subscription.
-    Does nothing if no free plan exists in the database.
+    If no free plan exists, logs a WARNING and returns without creating a
+    subscription — the user is left without a free fallback until a free plan
+    is seeded.
     """
     free_plan = Plan.free_plans().first()
     if free_plan is None:
