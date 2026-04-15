@@ -8,7 +8,6 @@ from uuid import UUID
 
 from asgiref.sync import async_to_sync
 from django.core.cache import cache
-from django.db.models import Q
 from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
 from rest_framework import serializers as drf_serializers
 from rest_framework.exceptions import NotFound, ValidationError
@@ -121,15 +120,19 @@ _customer_repo = DjangoStripeCustomerRepository()
 _subscription_repo = DjangoSubscriptionRepository()
 
 
-def _validate_quantity_for_plan(plan_price: PlanPrice, quantity: int) -> int:
+def _validate_quantity_for_context(context: PlanContext, quantity: int) -> int:
     """Enforce seat rules: personal plans always 1, team plans >= MIN_TEAM_SEATS."""
-    if plan_price.plan.context == PlanContext.PERSONAL:
+    if context == PlanContext.PERSONAL:
         if quantity != 1:
             raise ValidationError("Personal plans do not support multiple seats.")
         return 1
     if quantity < MIN_TEAM_SEATS:
         raise ValidationError(f"Team plans require at least {MIN_TEAM_SEATS} seats.")
     return quantity
+
+
+def _validate_quantity_for_plan(plan_price: PlanPrice, quantity: int) -> int:
+    return _validate_quantity_for_context(PlanContext(plan_price.plan.context), quantity)
 
 
 async def _get_customer_and_paid_subscription(
@@ -340,17 +343,27 @@ def _get_active_subscription_for_user(user: object) -> SubscriptionModel:
         ):
             raise NotFound("No active subscription found.")
     customer_id = getattr(getattr(user, "stripe_customer", None), "id", None)
-    q = Q(user=user)
-    if customer_id is not None:
-        q |= Q(stripe_customer_id=customer_id)
-    try:
-        return (
-            SubscriptionModel.objects.select_related("plan__price")
-            .filter(q, status__in=ACTIVE_SUBSCRIPTION_STATUSES)
-            .latest("created_at")
-        )
-    except SubscriptionModel.DoesNotExist as exc:
-        raise NotFound("No active subscription found.") from exc
+    # Split into two queries instead of ORing `user` with `stripe_customer_id`
+    # so each query can use its own partial index (idx_sub_user_status /
+    # idx_sub_customer_status) instead of degenerating into a scan.
+    base = SubscriptionModel.objects.select_related("plan__price").filter(
+        status__in=ACTIVE_SUBSCRIPTION_STATUSES
+    )
+    user_pk = getattr(user, "id", None)
+    sub_user = (
+        base.filter(user_id=user_pk).order_by("-created_at").first()
+        if user_pk is not None
+        else None
+    )
+    sub_customer = (
+        base.filter(stripe_customer_id=customer_id).order_by("-created_at").first()
+        if customer_id is not None
+        else None
+    )
+    candidates = [s for s in (sub_user, sub_customer) if s is not None]
+    if not candidates:
+        raise NotFound("No active subscription found.")
+    return max(candidates, key=lambda s: s.created_at)
 
 
 class SubscriptionView(APIView):
@@ -413,10 +426,10 @@ class SubscriptionView(APIView):
                 # Seat-only update: enforce per-context seat rules against the
                 # current subscription's plan, otherwise a personal sub could
                 # be bumped to N seats and a team sub down to 1.
-                current_price = await PlanPrice.objects.select_related("plan").aget(
-                    plan_id=sub.plan_id
+                current_plan = await PlanModel.objects.only("context").aget(id=sub.plan_id)
+                _validate_quantity_for_context(
+                    PlanContext(current_plan.context), data["quantity"]
                 )
-                _validate_quantity_for_plan(current_price, data["quantity"])
                 await update_seat_count(
                     stripe_subscription_id=stripe_sub_id,
                     quantity=data["quantity"],

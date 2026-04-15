@@ -56,9 +56,11 @@ class DjangoUserRepository:
         from apps.orgs.models import OrgMember  # lazy import — avoids circular
 
         member_user_ids = OrgMember.objects.filter(org_id=org_id).values("user_id")
+        # Explicit ordering: slicing without order_by is non-deterministic and
+        # can skip/repeat rows across paginated calls.
         return [
             self._to_domain(obj)
-            async for obj in UserModel.objects.filter(
-                id__in=member_user_ids,
-            )[offset : offset + limit]
+            async for obj in UserModel.objects.filter(id__in=member_user_ids).order_by("id")[
+                offset : offset + limit
+            ]
         ]

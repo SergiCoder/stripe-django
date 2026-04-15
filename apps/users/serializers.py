@@ -42,6 +42,9 @@ class UserSerializer(serializers.ModelSerializer[User]):
         read_only_fields = fields
 
     def get_linked_providers(self, obj: User) -> list[str]:
+        prefetched = getattr(obj, "_prefetched_objects_cache", {})
+        if "social_accounts" in prefetched:
+            return [sa.provider for sa in obj.social_accounts.all()]
         return list(obj.social_accounts.values_list("provider", flat=True))
 
     def to_representation(self, instance: User) -> dict[str, Any]:

@@ -242,7 +242,7 @@ class OrgMemberDetailView(APIView):
             target_role=CoreOrgRole(target.role),
         )
 
-        from apps.orgs.services import decrement_subscription_seats
+        from apps.orgs.tasks import decrement_subscription_seats_task
 
         target_user = target.user
         with transaction.atomic():
@@ -250,7 +250,11 @@ class OrgMemberDetailView(APIView):
             target_user.delete()
             # Stripe call must run only after DB commit; otherwise a rollback
             # would leave Stripe seat count out of sync with actual members.
-            transaction.on_commit(lambda: decrement_subscription_seats(org_id))
+            # Offload to Celery so the 500-1500ms Stripe round-trip doesn't
+            # sit in the request path.
+            transaction.on_commit(
+                lambda: decrement_subscription_seats_task.delay(str(org_id))
+            )
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -404,26 +408,21 @@ def _validate_seat_limit(org: Org) -> None:
     Lock the Subscription row so concurrent invites can't both pass the check
     and overrun the seat quota.
     """
-    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, StripeCustomer
+    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
     from apps.billing.models import Subscription as SubscriptionModel
 
     with transaction.atomic():
-        try:
-            customer = StripeCustomer.objects.get(org=org)
-        except StripeCustomer.DoesNotExist:
-            return  # No subscription — can't validate seats
-
-        try:
-            sub = (
-                SubscriptionModel.objects.select_for_update()
-                .filter(
-                    stripe_customer=customer,
-                    status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-                )
-                .get()
+        sub = (
+            SubscriptionModel.objects.select_for_update()
+            .select_related("stripe_customer")
+            .filter(
+                stripe_customer__org=org,
+                status__in=ACTIVE_SUBSCRIPTION_STATUSES,
             )
-        except SubscriptionModel.DoesNotExist:
-            return
+            .first()
+        )
+        if sub is None:
+            return  # No active subscription — can't validate seats
 
         current_members = OrgMember.objects.filter(org=org).count()
         pending_invitations = Invitation.objects.filter(

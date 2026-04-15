@@ -96,12 +96,14 @@ class AccountView(APIView):
         async def _pre_delete(user_id: uuid.UUID) -> None:
             # If owner: delete owned orgs (cascades member account deletion)
             await sync_to_async(delete_orgs_created_by_user)(user_id)
-            # If non-owner member: remove from org + decrement seats
-            membership = await OrgMember.objects.filter(user_id=user_id).afirst()
-            if membership:
-                org_id = membership.org_id
-                await membership.adelete()
-                await sync_to_async(decrement_subscription_seats)(org_id)
+            # If non-owner member: remove from every org and decrement each
+            # seat count. `.afirst()` missed the multi-membership case.
+            memberships = OrgMember.objects.filter(user_id=user_id)
+            org_ids = [m.org_id async for m in memberships]
+            if org_ids:
+                await memberships.adelete()
+                for org_id in org_ids:
+                    await sync_to_async(decrement_subscription_seats)(org_id)
 
         async_to_sync(delete_account)(
             user_id=user.id,

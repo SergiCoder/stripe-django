@@ -31,6 +31,9 @@ def assign_free_plan(user: User) -> None:
         # Lock the user row so two concurrent callers can't both see "no sub" and
         # create duplicates (register + OAuth-link can race at signup).
         User.objects.select_for_update().filter(id=user.id).first()
+        # Any existing subscription row (paid or free, active or canceled)
+        # blocks re-creation of the free fallback — callers are responsible
+        # for cleaning up the old row first when upgrading/cancelling flows.
         if Subscription.objects.filter(user=user).exists():
             return
         Subscription.objects.create(

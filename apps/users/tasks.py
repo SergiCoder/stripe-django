@@ -34,6 +34,8 @@ def cleanup_orphaned_org_accounts() -> None:
     """
     from datetime import UTC, datetime, timedelta
 
+    from django.db.models import Subquery
+
     from apps.orgs.models import OrgMember
     from apps.users.models import AccountType, User
 
@@ -42,12 +44,12 @@ def cleanup_orphaned_org_accounts() -> None:
         account_type=AccountType.ORG_MEMBER,
         created_at__lt=cutoff,
     ).exclude(
-        id__in=OrgMember.objects.values_list("user_id", flat=True),
+        id__in=Subquery(OrgMember.objects.values("user_id")),
     )
-    count = orphans.count()
-    if count:
-        orphans.delete()
-        logger.info("Cleaned up %d orphaned org-member accounts", count)
+    # _, details has a mapping but we only need the aggregate count for logging
+    deleted, _ = orphans.delete()
+    if deleted:
+        logger.info("Cleaned up %d orphaned org-member accounts", deleted)
 
 
 @app.task  # type: ignore[untyped-decorator]  # celery has no stubs
