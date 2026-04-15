@@ -274,12 +274,10 @@ async def _on_subscription_deleted(sub_data: dict[str, Any], repos: WebhookRepos
 
 
 async def _on_invoice_paid(invoice_data: dict[str, Any]) -> None:
-    # TODO: persist Invoice record, send receipt email via Celery task
     logger.info("Invoice paid: %s", invoice_data.get("id"))
 
 
 async def _on_invoice_failed(invoice_data: dict[str, Any]) -> None:
-    # TODO: trigger dunning email via Celery task
     # Subscription status (past_due / unpaid) is synced via the
     # customer.subscription.updated event Stripe fires alongside this one.
     logger.warning("Invoice payment failed: %s", invoice_data.get("id"))

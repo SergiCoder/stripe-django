@@ -1,4 +1,8 @@
-"""Currency resolution — determines which currency to use for a user's checkout."""
+"""Display-time currency conversion helpers.
+
+The catalog is USD-only and Stripe is always charged in USD; this module
+converts cents to a user's requested display currency via ``ExchangeRate``.
+"""
 
 SUPPORTED_CURRENCIES: frozenset[str] = frozenset(
     {
