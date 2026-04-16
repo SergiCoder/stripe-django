@@ -14,7 +14,9 @@ dependencies = [
     "django-cors-headers>=4.7",
     "psycopg[binary]>=3.3.3",
     "celery[redis]>=5.6.3",
-    # redis is pinned by celery's kombu dep to <6.5; redis 7.x requires a kombu/celery upgrade first
+    # redis is pinned by celery's kombu dep to <6.5; redis 7.x requires a kombu/celery upgrade first.
+    # Enforce the cap explicitly here so upgrades don't silently pick up redis 7.x via a transitive bump.
+    "redis>=6.4.0,<7",
     "pydantic-settings>=2.13.1",
     "django-hijack>=3.7.6",     # user impersonation in admin
     "whitenoise>=6.12.0",
