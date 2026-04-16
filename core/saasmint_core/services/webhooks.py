@@ -1,4 +1,4 @@
-"""Idempotent Stripe webhook handler — stores every event before processing."""
+"""Stripe webhook dispatch — operates on an already-persisted event."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from uuid import UUID, uuid4
 
 import stripe
 
-from saasmint_core.domain.stripe_event import StripeEvent
 from saasmint_core.domain.subscription import (
     FREE_SUBSCRIPTION_PERIOD_END,
     Subscription,
@@ -44,51 +43,35 @@ class WebhookRepos:
     on_org_subscription_canceled: OnOrgSubscriptionCanceled | None = field(default=None)
 
 
-async def handle_stripe_event(
-    payload: bytes,
-    signature: str,
-    webhook_secret: str,
+async def process_stored_event(
+    event: dict[str, Any],
+    stripe_id: str,
     repos: WebhookRepos,
 ) -> None:
+    """Dispatch a previously-persisted Stripe event.
+
+    The event is assumed to have been signature-verified and saved by the
+    webhook endpoint before enqueueing — this function only routes it and
+    updates the processed/failed status.
+
+    Raises:
+        WebhookDataError: the event references entities the system can't
+            resolve (unknown customer, price, missing fields). Caller must
+            not retry — the error is permanent.
+        stripe.StripeError, ConnectionError: transient errors from upstream
+            calls during dispatch. Caller should retry.
     """
-    Verify, deduplicate, store, and dispatch a Stripe webhook event.
-
-    Raises WebhookVerificationError if the signature is invalid.
-    Is a no-op if the event has already been processed (idempotent).
-    """
-    from saasmint_core.exceptions import WebhookVerificationError
-
-    try:
-        stripe_event = stripe.Webhook.construct_event(payload, signature, webhook_secret)  # type: ignore[no-untyped-call]  # Stripe stub missing return type annotation
-    except stripe.SignatureVerificationError as exc:
-        raise WebhookVerificationError("Invalid Stripe webhook signature") from exc
-
-    # Convert StripeObject → plain nested dict at the boundary. Newer
-    # stripe-python versions don't inherit StripeObject from dict, so it
-    # has no `.get()` and `dict(event)` raises KeyError. Tests stub
-    # construct_event to return a plain dict directly.
-    event: dict[str, Any] = (
-        stripe_event if isinstance(stripe_event, dict) else stripe_event.to_dict()
-    )
-    stripe_id: str = event["id"]
-
-    is_new = await repos.events.save_if_new(
-        StripeEvent(
-            id=uuid4(),
-            stripe_id=stripe_id,
-            type=event["type"],
-            livemode=event["livemode"],
-            payload=event,
-            created_at=datetime.now(UTC),
-        )
-    )
-    if not is_new:
-        logger.info("Skipping duplicate Stripe event %s", stripe_id)
-        return
+    from saasmint_core.exceptions import WebhookDataError
 
     try:
         await _dispatch(event, repos)
         await repos.events.mark_processed(stripe_id)
+    except WebhookDataError as exc:
+        await repos.events.mark_failed(stripe_id, str(exc))
+        raise
+    except (stripe.StripeError, ConnectionError) as exc:
+        await repos.events.mark_failed(stripe_id, str(exc))
+        raise
     except Exception as exc:
         await repos.events.mark_failed(stripe_id, str(exc))
         raise
@@ -173,6 +156,10 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
     period_end = first_item.get("current_period_end", sub_data.get("current_period_end"))
     if period_start is None or period_end is None:
         raise WebhookDataError(f"Subscription {stripe_sub_id} missing current_period_start/end")
+    if not isinstance(period_start, int) or not isinstance(period_end, int):
+        raise WebhookDataError(
+            f"Subscription {stripe_sub_id} has non-integer current_period_start/end"
+        )
 
     customer, plan_price, existing = await asyncio.gather(
         repos.customers.get_by_stripe_id(stripe_customer_str),
@@ -196,8 +183,8 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
         plan_id=plan_price.plan_id,
         quantity=int(first_item.get("quantity") or 1),
         trial_ends_at=_ts_to_dt(sub_data.get("trial_end")),
-        current_period_start=datetime.fromtimestamp(int(period_start), tz=UTC),
-        current_period_end=datetime.fromtimestamp(int(period_end), tz=UTC),
+        current_period_start=datetime.fromtimestamp(period_start, tz=UTC),
+        current_period_end=datetime.fromtimestamp(period_end, tz=UTC),
         canceled_at=_ts_to_dt(sub_data.get("canceled_at")),
         created_at=existing.created_at if existing else datetime.now(UTC),
     )
