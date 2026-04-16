@@ -22,6 +22,7 @@ def health_check(request: HttpRequest) -> JsonResponse:
 urlpatterns = [
     path("api/v1/health/", health_check, name="health-check"),
     path("admin/", admin.site.urls),
+    # Non-API admin-only views — excluded from OpenAPI schema via SCHEMA_PATH_PREFIX=/api/v[0-9].
     path("hijack/acquire/", HijackAcquireView.as_view(), name="hijack-acquire"),
     path("hijack/release/", HijackReleaseView.as_view(), name="hijack-release"),
     path("hijack/", include("hijack.urls")),
@@ -42,7 +43,11 @@ if settings.DEBUG:
     from django.conf.urls.static import static
 
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+    urlpatterns += staticfiles_urlpatterns()
 
+# Spectacular docs can be exposed independently of DEBUG (e.g. on staging)
+# via SCHEMA_PUBLIC=True. Always-on in DEBUG.
+if settings.DEBUG or getattr(settings, "SCHEMA_PUBLIC", False):
     from drf_spectacular.views import (
         SpectacularAPIView,
         SpectacularRedocView,
@@ -54,4 +59,3 @@ if settings.DEBUG:
         path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="swagger-ui"),
         path("api/redoc/", SpectacularRedocView.as_view(url_name="schema"), name="redoc"),
     ]
-    urlpatterns += staticfiles_urlpatterns()

@@ -1,13 +1,14 @@
-"""Tests for webhook endpoint and Celery task."""
+"""Tests for the Stripe webhook endpoint (sync-verify, sync-persist, 202 Accepted)."""
 
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import RequestFactory
 
+from apps.billing.models import StripeEvent
 from apps.billing.webhook import stripe_webhook
 
 
@@ -16,150 +17,186 @@ def rf():
     return RequestFactory()
 
 
+def _make_event_payload(
+    *,
+    stripe_id: str = "evt_test_123",
+    event_type: str = "checkout.session.completed",
+    livemode: bool = False,
+) -> str:
+    return json.dumps(
+        {
+            "id": stripe_id,
+            "type": event_type,
+            "livemode": livemode,
+            "data": {"object": {"id": "obj_123"}},
+        }
+    )
+
+
 @pytest.fixture
-def valid_payload():
-    return json.dumps({"id": "evt_test_123", "type": "checkout.session.completed"})
+def valid_payload() -> str:
+    return _make_event_payload()
 
 
+@pytest.mark.django_db
 class TestStripeWebhook:
     @patch("apps.billing.webhook.process_stripe_webhook")
     @patch("apps.billing.webhook.stripe.Webhook.construct_event")
-    def test_valid_signature_dispatches_to_celery(
-        self, mock_construct, mock_task, rf, valid_payload
+    def test_valid_event_persists_and_enqueues_with_event_id(
+        self, mock_construct, mock_task, rf, valid_payload, settings
     ):
+        settings.STRIPE_SECRET_KEY = "sk_test_abc"
         mock_construct.return_value = MagicMock()
         request = rf.post(
-            "/api/v1/webhooks/stripe",
+            "/api/v1/webhooks/stripe/",
             data=valid_payload,
             content_type="application/json",
             HTTP_STRIPE_SIGNATURE="sig_test",
         )
+
         resp = stripe_webhook(request)
-        assert resp.status_code == 200
-        mock_task.delay.assert_called_once_with(valid_payload, "sig_test")
+
+        assert resp.status_code == 202
+        row = StripeEvent.objects.get(stripe_id="evt_test_123")
+        assert row.type == "checkout.session.completed"
+        assert row.livemode is False
+        assert row.payload["data"]["object"]["id"] == "obj_123"
+        mock_task.delay.assert_called_once_with(str(row.id))
+
+    @patch("apps.billing.webhook.process_stripe_webhook")
+    @patch("apps.billing.webhook.stripe.Webhook.construct_event")
+    def test_duplicate_event_is_not_re_enqueued(
+        self, mock_construct, mock_task, rf, valid_payload, settings
+    ):
+        settings.STRIPE_SECRET_KEY = "sk_test_abc"
+        mock_construct.return_value = MagicMock()
+        request = rf.post(
+            "/api/v1/webhooks/stripe/",
+            data=valid_payload,
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig_test",
+        )
+
+        first = stripe_webhook(request)
+        second = stripe_webhook(
+            rf.post(
+                "/api/v1/webhooks/stripe/",
+                data=valid_payload,
+                content_type="application/json",
+                HTTP_STRIPE_SIGNATURE="sig_test",
+            )
+        )
+
+        assert first.status_code == 202
+        assert second.status_code == 202
+        assert StripeEvent.objects.filter(stripe_id="evt_test_123").count() == 1
+        mock_task.delay.assert_called_once()
 
     @patch("apps.billing.webhook.stripe.Webhook.construct_event")
     def test_invalid_signature_returns_400(self, mock_construct, rf, valid_payload):
         import stripe
 
-        mock_construct.side_effect = stripe.SignatureVerificationError("bad sig", "sig")
+        mock_construct.side_effect = stripe.SignatureVerificationError("bad sig", "sig")  # type: ignore[no-untyped-call]
         request = rf.post(
-            "/api/v1/webhooks/stripe",
+            "/api/v1/webhooks/stripe/",
             data=valid_payload,
             content_type="application/json",
             HTTP_STRIPE_SIGNATURE="bad_sig",
         )
+
         resp = stripe_webhook(request)
+
         assert resp.status_code == 400
+        assert not StripeEvent.objects.filter(stripe_id="evt_test_123").exists()
 
     @patch("apps.billing.webhook.stripe.Webhook.construct_event")
     def test_invalid_json_returns_400(self, mock_construct, rf):
         mock_construct.side_effect = ValueError("Invalid JSON")
         request = rf.post(
-            "/api/v1/webhooks/stripe",
+            "/api/v1/webhooks/stripe/",
             data="not json",
             content_type="application/json",
             HTTP_STRIPE_SIGNATURE="sig_test",
         )
+
         resp = stripe_webhook(request)
+
         assert resp.status_code == 400
 
-    @patch("apps.billing.webhook.process_stripe_webhook")
     @patch("apps.billing.webhook.stripe.Webhook.construct_event")
-    def test_missing_signature_header(self, mock_construct, mock_task, rf, valid_payload):
+    def test_missing_required_fields_returns_400(self, mock_construct, rf):
+        """Payload that passes signature verification but lacks id/type/livemode
+        is rejected with 400 — we can't persist a StripeEvent without them."""
         mock_construct.return_value = MagicMock()
+        bad_payload = json.dumps({"type": "something", "livemode": False})
         request = rf.post(
-            "/api/v1/webhooks/stripe",
+            "/api/v1/webhooks/stripe/",
+            data=bad_payload,
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig_test",
+        )
+
+        resp = stripe_webhook(request)
+
+        assert resp.status_code == 400
+
+    @patch("apps.billing.webhook.stripe.Webhook.construct_event")
+    def test_missing_signature_header_is_rejected_with_400(self, mock_construct, rf, valid_payload):
+        """Stripe rejects an empty signature; we should surface 400 and never
+        persist or enqueue. (Replaces a prior test that mocked the verifier
+        into returning success on an empty signature.)"""
+        import stripe
+
+        mock_construct.side_effect = stripe.SignatureVerificationError("missing sig", "")  # type: ignore[no-untyped-call]
+        request = rf.post(
+            "/api/v1/webhooks/stripe/",
             data=valid_payload,
             content_type="application/json",
         )
+
         resp = stripe_webhook(request)
-        # Empty string signature passed to construct_event — behavior depends on Stripe
-        # The mock accepts it, so we verify it reaches the task dispatch
-        assert resp.status_code == 200
 
+        assert resp.status_code == 400
+        assert not StripeEvent.objects.filter(stripe_id="evt_test_123").exists()
 
-class TestProcessStripeWebhookTask:
-    @patch("saasmint_core.services.webhooks.handle_stripe_event", new_callable=AsyncMock)
-    @patch("apps.billing.repositories.get_webhook_repos")
-    def test_successful_processing(self, mock_repos, mock_handle, settings):
-        from apps.billing.tasks import process_stripe_webhook
+    @patch("apps.billing.webhook.process_stripe_webhook")
+    @patch("apps.billing.webhook.stripe.Webhook.construct_event")
+    def test_livemode_mismatch_is_dropped_without_persisting(
+        self, mock_construct, mock_task, rf, settings
+    ):
+        """Live event received against a test key (or vice versa) is dropped
+        silently — 202, no StripeEvent row, no task enqueued."""
+        settings.STRIPE_SECRET_KEY = "sk_test_abc"
+        mock_construct.return_value = MagicMock()
+        live_payload = _make_event_payload(stripe_id="evt_live_mismatch", livemode=True)
+        request = rf.post(
+            "/api/v1/webhooks/stripe/",
+            data=live_payload,
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig_test",
+        )
 
-        mock_repos.return_value = MagicMock()
-        payload = json.dumps({"id": "evt_123", "type": "invoice.paid"})
-        process_stripe_webhook(payload, "sig_test")
-        mock_handle.assert_called_once()
+        resp = stripe_webhook(request)
 
-    @patch("saasmint_core.services.webhooks.handle_stripe_event", new_callable=AsyncMock)
-    @patch("apps.billing.repositories.get_webhook_repos")
-    def test_verification_error_not_retried(self, mock_repos, mock_handle, settings):
-        from saasmint_core.exceptions import WebhookVerificationError
+        assert resp.status_code == 202
+        assert not StripeEvent.objects.filter(stripe_id="evt_live_mismatch").exists()
+        mock_task.delay.assert_not_called()
 
-        from apps.billing.tasks import process_stripe_webhook
+    @patch("apps.billing.webhook.process_stripe_webhook")
+    @patch("apps.billing.webhook.stripe.Webhook.construct_event")
+    def test_live_event_accepted_against_live_key(self, mock_construct, mock_task, rf, settings):
+        settings.STRIPE_SECRET_KEY = "sk_live_abc"
+        mock_construct.return_value = MagicMock()
+        live_payload = _make_event_payload(stripe_id="evt_live_ok", livemode=True)
+        request = rf.post(
+            "/api/v1/webhooks/stripe/",
+            data=live_payload,
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig_test",
+        )
 
-        mock_repos.return_value = MagicMock()
-        mock_handle.side_effect = WebhookVerificationError("bad sig")
-        payload = json.dumps({"id": "evt_123", "type": "test"})
+        resp = stripe_webhook(request)
 
-        with pytest.raises(WebhookVerificationError):
-            process_stripe_webhook(payload, "sig_test")
-
-    @patch("saasmint_core.services.webhooks.handle_stripe_event", new_callable=AsyncMock)
-    @patch("apps.billing.repositories.get_webhook_repos")
-    def test_malformed_json_still_processes(self, mock_repos, mock_handle, settings):
-        from apps.billing.tasks import process_stripe_webhook
-
-        mock_repos.return_value = MagicMock()
-        # Malformed JSON — should still attempt processing
-        process_stripe_webhook("not json", "sig_test")
-        mock_handle.assert_called_once()
-
-    @patch("saasmint_core.services.webhooks.handle_stripe_event", new_callable=AsyncMock)
-    @patch("apps.billing.repositories.get_webhook_repos")
-    def test_stripe_error_triggers_retry(self, mock_repos, mock_handle, settings):
-        """StripeError should schedule a retry via self.retry."""
-        import stripe
-
-        from apps.billing.tasks import process_stripe_webhook
-
-        mock_repos.return_value = MagicMock()
-        mock_handle.side_effect = stripe.StripeError("network error")
-        payload = json.dumps({"id": "evt_retry", "type": "invoice.paid"})
-
-        # Celery tasks raise self.retry() which itself raises Retry; catch it.
-        from celery.exceptions import Retry
-
-        with pytest.raises((stripe.StripeError, Retry)):
-            process_stripe_webhook(payload, "sig_test")
-
-    @patch("saasmint_core.services.webhooks.handle_stripe_event", new_callable=AsyncMock)
-    @patch("apps.billing.repositories.get_webhook_repos")
-    def test_connection_error_triggers_retry(self, mock_repos, mock_handle, settings):
-        """ConnectionError should schedule a retry via self.retry."""
-        from apps.billing.tasks import process_stripe_webhook
-
-        mock_repos.return_value = MagicMock()
-        mock_handle.side_effect = ConnectionError("connection refused")
-        payload = json.dumps({"id": "evt_conn", "type": "invoice.paid"})
-
-        from celery.exceptions import Retry
-
-        with pytest.raises((ConnectionError, Retry)):
-            process_stripe_webhook(payload, "sig_test")
-
-    @patch("saasmint_core.services.webhooks.handle_stripe_event", new_callable=AsyncMock)
-    @patch("apps.billing.repositories.get_webhook_repos")
-    def test_operational_error_triggers_retry(self, mock_repos, mock_handle, settings):
-        """OperationalError (DB) should schedule a retry via self.retry."""
-        from django.db.utils import OperationalError
-
-        from apps.billing.tasks import process_stripe_webhook
-
-        mock_repos.return_value = MagicMock()
-        mock_handle.side_effect = OperationalError("db locked")
-        payload = json.dumps({"id": "evt_db", "type": "invoice.paid"})
-
-        from celery.exceptions import Retry
-
-        with pytest.raises((OperationalError, Retry)):
-            process_stripe_webhook(payload, "sig_test")
+        assert resp.status_code == 202
+        assert StripeEvent.objects.filter(stripe_id="evt_live_ok").exists()
+        mock_task.delay.assert_called_once()

@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from django.db.models import Q
 from saasmint_core.domain.product import Product, ProductPrice, ProductType
 from saasmint_core.domain.stripe_customer import StripeCustomer
 from saasmint_core.domain.stripe_event import StripeEvent
@@ -29,7 +29,7 @@ from apps.billing.models import ProductPrice as ProductPriceModel
 from apps.billing.models import StripeCustomer as StripeCustomerModel
 from apps.billing.models import StripeEvent as StripeEventModel
 from apps.billing.models import Subscription as SubscriptionModel
-from helpers import aget_or_none
+from helpers import aget_latest_or_none, aget_or_none
 
 if TYPE_CHECKING:
     from saasmint_core.services.webhooks import WebhookRepos
@@ -62,6 +62,9 @@ class DjangoStripeCustomerRepository:
         return await aget_or_none(StripeCustomerModel, self._to_domain, org_id=org_id)
 
     async def save(self, customer: StripeCustomer) -> StripeCustomer:
+        # ``lookup`` is spread as ``**kwargs`` into ``aupdate_or_create``, which
+        # expects ``Mapping[str, Any]``. ``defaults`` is passed by value and can
+        # use the stricter ``dict[str, object]`` — DO NOT unify the two.
         lookup: dict[str, Any] = {}
         if customer.user_id:
             lookup["user_id"] = customer.user_id
@@ -112,24 +115,27 @@ class DjangoSubscriptionRepository:
         return await aget_or_none(SubscriptionModel, self._to_domain, stripe_id=stripe_id)
 
     async def _get_latest_active(self, **filter_kwargs: object) -> Subscription | None:
-        try:
-            obj = await SubscriptionModel.objects.filter(
+        return await aget_latest_or_none(
+            SubscriptionModel.objects.filter(
                 status__in=ACTIVE_SUBSCRIPTION_STATUSES,
                 **filter_kwargs,
-            ).alatest("created_at")
-            return self._to_domain(obj)
-        except SubscriptionModel.DoesNotExist:
-            return None
+            ),
+            self._to_domain,
+        )
 
     async def get_active_for_user(self, user_id: UUID) -> Subscription | None:
-        try:
-            obj = await SubscriptionModel.objects.filter(
-                Q(user_id=user_id) | Q(stripe_customer__user_id=user_id),
-                status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-            ).alatest("created_at")
-            return self._to_domain(obj)
-        except SubscriptionModel.DoesNotExist:
+        # Split the OR into two index-friendly queries — the OR'd predicate
+        # can't use either of `idx_sub_user_status` / `idx_sub_customer_status`
+        # and degenerates into a scan on hot dashboard paths.
+        base = SubscriptionModel.objects.filter(status__in=ACTIVE_SUBSCRIPTION_STATUSES)
+        by_user = await aget_latest_or_none(base.filter(user_id=user_id), self._to_domain)
+        by_customer = await aget_latest_or_none(
+            base.filter(stripe_customer__user_id=user_id), self._to_domain
+        )
+        candidates = [s for s in (by_user, by_customer) if s is not None]
+        if not candidates:
             return None
+        return max(candidates, key=lambda s: s.created_at)
 
     async def get_active_for_customer(self, stripe_customer_id: UUID) -> Subscription | None:
         try:
@@ -319,12 +325,11 @@ class DjangoStripeEventRepository:
         await StripeEventModel.objects.filter(stripe_id=stripe_id).aupdate(error=error)
 
     async def list_recent(self, limit: int = 50) -> list[StripeEvent]:
-        from asgiref.sync import sync_to_async
-
         capped = min(limit, 100)
-        qs = StripeEventModel.objects.order_by("-created_at")[:capped]
-        objs: list[StripeEventModel] = await sync_to_async(lambda: list(qs))()
-        return [self._to_domain(obj) for obj in objs]
+        return [
+            self._to_domain(obj)
+            async for obj in StripeEventModel.objects.order_by("-created_at")[:capped]
+        ]
 
 
 def get_webhook_repos() -> WebhookRepos:
@@ -340,4 +345,25 @@ def get_webhook_repos() -> WebhookRepos:
         plans=DjangoPlanRepository(),
         on_team_checkout_completed=on_team_checkout_completed,
         on_org_subscription_canceled=deactivate_org,
+    )
+
+
+@dataclass(frozen=True)
+class BillingRepos:
+    """Bundle of billing repositories used by views and GDPR flows."""
+
+    customers: DjangoStripeCustomerRepository
+    subscriptions: DjangoSubscriptionRepository
+
+
+def get_billing_repos() -> BillingRepos:
+    """Build the repositories used by DRF views touching customers/subscriptions.
+
+    Exposed as a factory (mirroring ``get_webhook_repos``) so tests can swap a
+    single call target instead of patching module-level singletons in every
+    consumer module.
+    """
+    return BillingRepos(
+        customers=DjangoStripeCustomerRepository(),
+        subscriptions=DjangoSubscriptionRepository(),
     )

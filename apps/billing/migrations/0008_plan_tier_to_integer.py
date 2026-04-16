@@ -1,14 +1,24 @@
 """Convert Plan.tier from CharField (free/basic/pro) to IntegerField (1/2/3)."""
 
 from django.db import migrations, models
+from django.db.models import Case, F, Value, When
 
-TIER_MAP = {"free": "1", "basic": "2", "pro": "3"}
+TIER_MAP = {"free": 1, "basic": 2, "pro": 3}
 
 
 def convert_tier_to_int(apps, schema_editor):
     Plan = apps.get_model("billing", "Plan")
-    for old_val, new_val in TIER_MAP.items():
-        Plan.objects.filter(tier=old_val).update(tier=new_val)
+    # Cast explicitly via CASE so we don't rely on Postgres silently coercing
+    # quoted digits into integers when the column type changes. `default=F("tier")`
+    # preserves any unexpected value as-is (rather than writing the literal
+    # string "tier" on every mismatch, which would explode when the column
+    # type flips to IntegerField below).
+    Plan.objects.update(
+        tier=Case(
+            *[When(tier=old, then=Value(str(new))) for old, new in TIER_MAP.items()],
+            default=F("tier"),
+        )
+    )
 
 
 class Migration(migrations.Migration):

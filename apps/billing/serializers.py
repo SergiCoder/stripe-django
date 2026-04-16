@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from django.conf import settings
 from rest_framework import serializers
 from saasmint_core.services.currency import format_amount, round_friendly
 
-from apps.billing.models import Plan, PlanPrice, Product, ProductPrice, Subscription
+from apps.billing.models import Plan, PlanPrice, PlanTier, Product, ProductPrice, Subscription
 
 
 def _convert_amount(amount: int, currency: str, rate: float) -> float:
@@ -52,37 +53,56 @@ def _validate_redirect_url(url: str) -> str:
     raise serializers.ValidationError("URL domain is not in the list of allowed origins.")
 
 
-class _DisplayCurrencyMixin:
-    """Shared logic for serializers that add display_amount / currency fields."""
+class _PriceSerializer(serializers.ModelSerializer[Any]):
+    """Shared base for PlanPrice / ProductPrice serializers.
 
-    def get_display_amount(self, obj: PlanPrice | ProductPrice) -> float:
-        return _convert_amount(
-            obj.amount,
-            self.context.get("currency", "usd"),  # type: ignore[attr-defined]
-            self.context.get("rate", 1.0),  # type: ignore[attr-defined]
-        )
+    Declaring the three display-currency fields and their getters once on a
+    ModelSerializer base lets concrete subclasses supply only the Meta.model
+    binding. DRF's metaclass walks `_declared_fields` on base Serializer
+    classes (unlike plain mixins), so the fields flow through inheritance.
 
-    def get_currency(self, obj: PlanPrice | ProductPrice) -> str:
-        return str(self.context.get("currency", "usd"))  # type: ignore[attr-defined]
+    Not instantiated directly: Meta.model is left unset so subclass Metas can
+    inject the concrete model.
+    """
 
-    def get_approximate(self, obj: PlanPrice | ProductPrice) -> bool:
-        currency: str = self.context.get("currency", "usd")  # type: ignore[attr-defined]
-        return currency != "usd"
-
-
-class PlanPriceSerializer(_DisplayCurrencyMixin, serializers.ModelSerializer[PlanPrice]):
     display_amount = serializers.SerializerMethodField()
     currency = serializers.SerializerMethodField()
     approximate = serializers.SerializerMethodField()
 
+    if TYPE_CHECKING:
+        context: dict[str, Any]
+
     class Meta:
-        model = PlanPrice
         fields = ("id", "amount", "display_amount", "currency", "approximate")
         read_only_fields = ("id", "amount")
+
+    def get_display_amount(self, obj: PlanPrice | ProductPrice) -> float:
+        return _convert_amount(
+            obj.amount,
+            self.context.get("currency", "usd"),
+            self.context.get("rate", 1.0),
+        )
+
+    def get_currency(self, obj: PlanPrice | ProductPrice) -> str:
+        return str(self.context.get("currency", "usd"))
+
+    def get_approximate(self, obj: PlanPrice | ProductPrice) -> bool:
+        currency: str = self.context.get("currency", "usd")
+        return currency != "usd"
+
+
+class PlanPriceSerializer(_PriceSerializer):
+    class Meta(_PriceSerializer.Meta):
+        model = PlanPrice
 
 
 class PlanSerializer(serializers.ModelSerializer[Plan]):
     price = PlanPriceSerializer(read_only=True)
+    # Expose the tier as its string label (``"free"``/``"basic"``/``"pro"``) to
+    # stay consistent with every other enum on the wire (``context``,
+    # ``interval``, ``status``, ``role``) — clients otherwise have to
+    # special-case an int for this one field.
+    tier = serializers.SerializerMethodField()
 
     class Meta:
         model = Plan
@@ -98,16 +118,13 @@ class PlanSerializer(serializers.ModelSerializer[Plan]):
         )
         read_only_fields = fields
 
+    def get_tier(self, obj: Plan) -> str:
+        return PlanTier(obj.tier).label.lower()
 
-class ProductPriceSerializer(_DisplayCurrencyMixin, serializers.ModelSerializer[ProductPrice]):
-    display_amount = serializers.SerializerMethodField()
-    currency = serializers.SerializerMethodField()
-    approximate = serializers.SerializerMethodField()
 
-    class Meta:
+class ProductPriceSerializer(_PriceSerializer):
+    class Meta(_PriceSerializer.Meta):
         model = ProductPrice
-        fields = ("id", "amount", "display_amount", "currency", "approximate")
-        read_only_fields = ("id", "amount")
 
 
 class ProductSerializer(serializers.ModelSerializer[Product]):

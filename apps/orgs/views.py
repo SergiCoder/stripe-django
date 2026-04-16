@@ -5,26 +5,26 @@ from __future__ import annotations
 import logging
 import secrets
 from datetime import timedelta
-from typing import ClassVar
+from typing import Any, ClassVar
 from uuid import UUID
 
 from django.db import transaction
 from django.shortcuts import get_object_or_404
+from django.urls import reverse
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
 from rest_framework import serializers as drf_serializers
 from rest_framework import status
-from rest_framework.exceptions import ValidationError as DRFValidationError
+from rest_framework.exceptions import APIException, NotFound, PermissionDenied
 from rest_framework.pagination import LimitOffsetPagination
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
-from rest_framework.views import APIView
 from saasmint_core.domain.org import OrgRole as CoreOrgRole
 from saasmint_core.exceptions import InsufficientPermissionError, OrgNotFoundError
 from saasmint_core.services.orgs import check_can_manage_member
 
+from apps.base_views import OrgsScopedView
 from apps.orgs.models import Invitation, InvitationStatus, Org, OrgMember, OrgRole
 from apps.orgs.serializers import (
     CreateInvitationSerializer,
@@ -36,7 +36,7 @@ from apps.orgs.serializers import (
     UpdateMemberSerializer,
     UpdateOrgSerializer,
 )
-from apps.users.models import AccountType, User
+from apps.users.services import email_is_registered
 from helpers import get_user
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,80 @@ logger = logging.getLogger(__name__)
 _ADMIN_OR_ABOVE = (OrgRole.OWNER, OrgRole.ADMIN)
 _OWNER_ONLY = (OrgRole.OWNER,)
 
+
+class _Gone(APIException):
+    status_code = status.HTTP_410_GONE
+    default_detail = "Resource is no longer available."
+    default_code = "gone"
+
+
+class _Conflict(APIException):
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = "Conflict."
+    default_code = "conflict"
+
+
+class _InvitationExpired(_Gone):
+    default_detail = "This invitation has expired."
+    default_code = "invitation_expired"
+
+
+class _InvitationOrgGone(NotFound):
+    default_detail = "This organization no longer exists."
+    default_code = "org_not_found"
+
+
+class _InvitationEmailExists(_Conflict):
+    default_detail = "This email is already registered."
+    default_code = "email_exists"
+
+
+class _InvitationPendingExists(_Conflict):
+    default_detail = "A pending invitation already exists for this email."
+    default_code = "invitation_pending"
+
+
+class _SeatLimitReached(_Conflict):
+    default_detail = "Org has reached its seat limit. Upgrade your plan to invite more members."
+    default_code = "seat_limit_reached"
+
+
+class _InvitationAddressedToOther(PermissionDenied):
+    default_detail = "This invitation is addressed to another account."
+    default_code = "forbidden"
+
+
 INVITATION_EXPIRY_DAYS = 7
+
+_DEFAULT_PAGE_SIZE = 50
+_MAX_PAGE_SIZE = 100
+
+
+def _default_paginator() -> LimitOffsetPagination:
+    """Return a paginator with the app's standard defaults."""
+    paginator = LimitOffsetPagination()
+    paginator.default_limit = _DEFAULT_PAGE_SIZE
+    paginator.max_limit = _MAX_PAGE_SIZE
+    return paginator
+
+
+def _paginated_response_schema(
+    name: str, child: drf_serializers.BaseSerializer[Any]
+) -> drf_serializers.Serializer[object]:
+    """Build an inline serializer for the DRF paginated envelope.
+
+    Document the real wire shape of ``LimitOffsetPagination`` responses —
+    a bare ``child(many=True)`` hides ``count``/``next``/``previous``.
+    """
+    return inline_serializer(
+        name,
+        {
+            "count": drf_serializers.IntegerField(),
+            "next": drf_serializers.URLField(allow_null=True),
+            "previous": drf_serializers.URLField(allow_null=True),
+            "results": child,
+        },
+    )
 
 
 def _get_org_and_member(
@@ -74,14 +147,11 @@ def _get_org_and_member(
 # ---------------------------------------------------------------------------
 
 
-class OrgListView(APIView):
+class OrgListView(OrgsScopedView):
     """GET /api/v1/orgs/ — list user's orgs."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "orgs"
-
     @extend_schema(
-        responses=OrgSerializer(many=True),
+        responses=_paginated_response_schema("OrgListResponse", OrgSerializer(many=True)),
         parameters=[
             OpenApiParameter("limit", int, description="Page size (max 100)"),
             OpenApiParameter("offset", int, description="Number of items to skip"),
@@ -95,18 +165,13 @@ class OrgListView(APIView):
             deleted_at__isnull=True,
             is_active=True,
         ).order_by("name")
-        paginator = LimitOffsetPagination()
-        paginator.default_limit = 50
-        paginator.max_limit = 100
+        paginator = _default_paginator()
         page = paginator.paginate_queryset(orgs, request)
         return paginator.get_paginated_response(OrgSerializer(page, many=True).data)
 
 
-class OrgDetailView(APIView):
+class OrgDetailView(OrgsScopedView):
     """GET/PATCH /api/v1/orgs/{org_id}/."""
-
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "orgs"
 
     @extend_schema(responses=OrgSerializer, tags=["orgs"])
     def get(self, request: Request, org_id: UUID) -> Response:
@@ -135,16 +200,15 @@ class OrgDetailView(APIView):
 # ---------------------------------------------------------------------------
 
 
-class OrgMemberListView(APIView):
+class OrgMemberListView(OrgsScopedView):
     """GET /api/v1/orgs/{org_id}/members/ — list members."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "orgs"
-
     @extend_schema(
-        responses=OrgMemberSerializer(many=True),
+        responses=_paginated_response_schema(
+            "OrgMemberListResponse", OrgMemberSerializer(many=True)
+        ),
         parameters=[
-            OpenApiParameter("limit", int, description="Page size (max 200)"),
+            OpenApiParameter("limit", int, description="Page size (max 100)"),
             OpenApiParameter("offset", int, description="Number of items to skip"),
         ],
         tags=["orgs"],
@@ -153,18 +217,13 @@ class OrgMemberListView(APIView):
         user = get_user(request)
         org, _ = _get_org_and_member(user.id, org_id)
         queryset = OrgMember.objects.filter(org=org).select_related("user").order_by("joined_at")
-        paginator = LimitOffsetPagination()
-        paginator.default_limit = 50
-        paginator.max_limit = 200
+        paginator = _default_paginator()
         page = paginator.paginate_queryset(queryset, request)
         return paginator.get_paginated_response(OrgMemberSerializer(page, many=True).data)
 
 
-class OrgMemberDetailView(APIView):
+class OrgMemberDetailView(OrgsScopedView):
     """PATCH/DELETE /api/v1/orgs/{org_id}/members/{user_id}/."""
-
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "orgs"
 
     @extend_schema(request=UpdateMemberSerializer, responses=OrgMemberSerializer, tags=["orgs"])
     def patch(self, request: Request, org_id: UUID, member_user_id: UUID) -> Response:
@@ -198,7 +257,17 @@ class OrgMemberDetailView(APIView):
         target.save(update_fields=list(ser.validated_data.keys()))
         return Response(OrgMemberSerializer(target).data)
 
-    @extend_schema(request=None, responses={204: None}, tags=["orgs"])
+    @extend_schema(
+        request=None,
+        responses={204: None},
+        description=(
+            "Remove a member from the org. **Destructive:** this hard-deletes the"
+            " member's user account in addition to their membership row, and"
+            " decrements the org's Stripe seat count. The target cannot be the"
+            " org owner — transfer ownership first."
+        ),
+        tags=["orgs"],
+    )
     def delete(self, request: Request, org_id: UUID, member_user_id: UUID) -> Response:
         """Remove a member — decrements Stripe seats and hard-deletes their account."""
         user = get_user(request)
@@ -220,16 +289,17 @@ class OrgMemberDetailView(APIView):
             target_role=CoreOrgRole(target.role),
         )
 
-        from apps.orgs.services import decrement_subscription_seats
+        from apps.orgs.tasks import decrement_subscription_seats_task
 
         target_user = target.user
-        target.delete()
-
-        # Decrement seats on the Stripe subscription
-        decrement_subscription_seats(org_id)
-
-        # Hard-delete the removed user's account (CASCADE handles related models)
-        target_user.delete()
+        with transaction.atomic():
+            target.delete()
+            target_user.delete()
+            # Stripe call must run only after DB commit; otherwise a rollback
+            # would leave Stripe seat count out of sync with actual members.
+            # Offload to Celery so the 500-1500ms Stripe round-trip doesn't
+            # sit in the request path.
+            transaction.on_commit(lambda: decrement_subscription_seats_task.delay(str(org_id)))
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -239,18 +309,15 @@ class OrgMemberDetailView(APIView):
 # ---------------------------------------------------------------------------
 
 
-class OrgTransferOwnershipView(APIView):
-    """POST /api/v1/orgs/{org_id}/transfer-ownership/ — transfer owner role."""
-
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "orgs"
+class OrgOwnerView(OrgsScopedView):
+    """PUT /api/v1/orgs/{org_id}/owner/ — transfer ownership to another admin."""
 
     @extend_schema(
         request=TransferOwnershipSerializer,
         responses={200: OrgMemberSerializer},
         tags=["orgs"],
     )
-    def post(self, request: Request, org_id: UUID) -> Response:
+    def put(self, request: Request, org_id: UUID) -> Response:
         user = get_user(request)
         _, caller = _get_org_and_member(user.id, org_id, allowed_roles=_OWNER_ONLY)
 
@@ -277,7 +344,13 @@ class OrgTransferOwnershipView(APIView):
             caller.is_billing = False
             caller.save(update_fields=["role", "is_billing"])
 
-        return Response(OrgMemberSerializer(target).data)
+        location = request.build_absolute_uri(
+            reverse(
+                "org-member-detail",
+                kwargs={"org_id": org_id, "member_user_id": target.user_id},
+            )
+        )
+        return Response(OrgMemberSerializer(target).data, headers={"Location": location})
 
 
 # ---------------------------------------------------------------------------
@@ -285,14 +358,17 @@ class OrgTransferOwnershipView(APIView):
 # ---------------------------------------------------------------------------
 
 
-class InvitationListCreateView(APIView):
+class InvitationListCreateView(OrgsScopedView):
     """GET/POST /api/v1/orgs/{org_id}/invitations/ — list or create invitations."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "orgs"
-
     @extend_schema(
-        responses=InvitationSerializer(many=True),
+        responses=_paginated_response_schema(
+            "InvitationListResponse", InvitationSerializer(many=True)
+        ),
+        parameters=[
+            OpenApiParameter("limit", int, description="Page size (max 100)"),
+            OpenApiParameter("offset", int, description="Number of items to skip"),
+        ],
         tags=["orgs"],
     )
     def get(self, request: Request, org_id: UUID) -> Response:
@@ -303,7 +379,9 @@ class InvitationListCreateView(APIView):
             .select_related("org", "invited_by")
             .order_by("-created_at")
         )
-        return Response(InvitationSerializer(invitations, many=True).data)
+        paginator = _default_paginator()
+        page = paginator.paginate_queryset(invitations, request)
+        return paginator.get_paginated_response(InvitationSerializer(page, many=True).data)
 
     @extend_schema(
         request=CreateInvitationSerializer,
@@ -322,65 +400,75 @@ class InvitationListCreateView(APIView):
         role = ser.validated_data["role"]
 
         # Cannot invite users who already have an account
-        if User.objects.filter(
-            email=email,
-        ).exists():
-            raise DRFValidationError(
-                {"email": ["This email is already registered. Only new users can be invited."]}
-            )
+        if email_is_registered(email):
+            raise _InvitationEmailExists
 
         # Cannot invite someone with a pending invitation
         if Invitation.objects.filter(
             org=org, email=email, status=InvitationStatus.PENDING
         ).exists():
-            raise DRFValidationError(
-                {"email": ["A pending invitation already exists for this email."]}
-            )
-
-        # Check seat limit against subscription quantity
-        _validate_seat_limit(org)
+            raise _InvitationPendingExists
 
         token = secrets.token_urlsafe(32)
-        invitation = Invitation.objects.create(
-            org=org,
-            email=email,
-            role=role,
-            token=token,
-            invited_by=user,
-            expires_at=timezone.now() + timedelta(days=INVITATION_EXPIRY_DAYS),
-        )
+        # The caller owns the atomic block so the seat-limit check and the
+        # Invitation INSERT run under the same transaction — otherwise the
+        # row-lock released between check and insert lets two concurrent
+        # invites both pass the check and overrun the seat quota.
+        with transaction.atomic():
+            _validate_seat_limit(org)
+            invitation = Invitation.objects.create(
+                org=org,
+                email=email,
+                role=role,
+                token=token,
+                invited_by=user,
+                expires_at=timezone.now() + timedelta(days=INVITATION_EXPIRY_DAYS),
+            )
+            # Defer email dispatch until commit so the worker can't race ahead
+            # of the DB write and handle a missing invitation row.
+            transaction.on_commit(
+                lambda: send_invitation_email_task.delay(
+                    email=email,
+                    token=token,
+                    org_name=org.name,
+                    inviter_name=user.full_name,
+                )
+            )
 
-        # Send invitation email asynchronously
-        send_invitation_email_task.delay(
-            email=email,
-            token=token,
-            org_name=org.name,
-            inviter_name=user.full_name,
+        location = request.build_absolute_uri(
+            reverse("orgs-invitations:invitation-detail", kwargs={"token": token})
         )
-
         return Response(
             InvitationSerializer(invitation).data,
             status=status.HTTP_201_CREATED,
+            headers={"Location": location},
         )
 
 
 def _validate_seat_limit(org: Org) -> None:
-    """Raise ValidationError if the org has reached its subscription seat limit."""
-    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, StripeCustomer
+    """Raise ``_SeatLimitReached`` if the org has reached its subscription seat limit.
+
+    Must be called inside an ``atomic()`` block owned by the caller so the
+    row lock taken here stays held until the caller's Invitation INSERT
+    commits — otherwise two concurrent invites can both pass the check and
+    overrun the quota.
+    """
+    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
     from apps.billing.models import Subscription as SubscriptionModel
 
-    try:
-        customer = StripeCustomer.objects.get(org=org)
-    except StripeCustomer.DoesNotExist:
-        return  # No subscription — can't validate seats
-
-    try:
-        sub = SubscriptionModel.objects.get(
-            stripe_customer=customer,
+    # Lock the active team sub row. We can't use the shared read-only helper
+    # here because this one must take a row lock.
+    sub = (
+        SubscriptionModel.objects.select_for_update()
+        .select_related("stripe_customer")
+        .filter(
+            stripe_customer__org=org,
             status__in=ACTIVE_SUBSCRIPTION_STATUSES,
         )
-    except SubscriptionModel.DoesNotExist:
-        return
+        .first()
+    )
+    if sub is None:
+        return  # No active subscription — can't validate seats
 
     current_members = OrgMember.objects.filter(org=org).count()
     pending_invitations = Invitation.objects.filter(
@@ -388,16 +476,11 @@ def _validate_seat_limit(org: Org) -> None:
     ).count()
 
     if current_members + pending_invitations >= sub.quantity:
-        raise DRFValidationError(
-            {"detail": "Org has reached its seat limit. Upgrade your plan to invite more members."}
-        )
+        raise _SeatLimitReached
 
 
-class InvitationCancelView(APIView):
+class InvitationCancelView(OrgsScopedView):
     """DELETE /api/v1/orgs/{org_id}/invitations/{invitation_id}/ — cancel invitation."""
-
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "orgs"
 
     @extend_schema(request=None, responses={204: None}, tags=["orgs"])
     def delete(self, request: Request, org_id: UUID, invitation_id: UUID) -> Response:
@@ -417,7 +500,7 @@ class InvitationCancelView(APIView):
 # ---------------------------------------------------------------------------
 
 
-class InvitationDetailView(APIView):
+class InvitationDetailView(OrgsScopedView):
     """GET /api/v1/invitations/{token}/ — fetch invitation details by token.
 
     Unauthenticated endpoint. Returns invitation info including the
@@ -425,8 +508,7 @@ class InvitationDetailView(APIView):
     """
 
     permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "orgs"
+    throttle_scope = "auth"
 
     @extend_schema(responses={200: InvitationSerializer}, tags=["orgs"])
     def get(self, request: Request, token: str) -> Response:
@@ -438,15 +520,20 @@ class InvitationDetailView(APIView):
         return Response(InvitationSerializer(invitation).data)
 
 
-class InvitationAcceptView(APIView):
+class InvitationAcceptView(OrgsScopedView):
     """POST /api/v1/invitations/{token}/accept/ — register and join an org.
 
     Unauthenticated endpoint. The invitee provides registration data
     (full_name, password) and is created as an org_member user.
+
+    No session tokens are issued here — the invite token alone does not prove
+    mailbox control, so a leaked/forwarded link would otherwise onboard an
+    attacker with live credentials. Instead the account is created unverified
+    and a verification email is sent; the invitee must click the link to
+    activate and sign in (``POST /api/v1/auth/verify-email/`` returns tokens).
     """
 
     permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "auth"
 
     @extend_schema(
@@ -456,78 +543,65 @@ class InvitationAcceptView(APIView):
                 "InvitationAcceptResponse",
                 {
                     "org": OrgSerializer(),
-                    "access_token": drf_serializers.CharField(),
-                    "refresh_token": drf_serializers.CharField(),
-                    "token_type": drf_serializers.CharField(),
+                    "detail": drf_serializers.CharField(),
+                    "code": drf_serializers.CharField(),
                 },
             )
         },
         tags=["orgs"],
     )
     def post(self, request: Request, token: str) -> Response:
-        from apps.users.authentication import create_access_token, create_refresh_token
-
         invitation = get_object_or_404(Invitation, token=token, status=InvitationStatus.PENDING)
 
         # Check expiry
         if invitation.expires_at < timezone.now():
             invitation.status = InvitationStatus.EXPIRED
             invitation.save(update_fields=["status"])
-            raise DRFValidationError({"detail": "This invitation has expired."})
+            raise _InvitationExpired
 
         org = invitation.org
         if org.deleted_at is not None or not org.is_active:
-            raise DRFValidationError({"detail": "This organization no longer exists."})
+            raise _InvitationOrgGone
 
         # Email must not already be registered
-        if User.objects.filter(
-            email=invitation.email,
-        ).exists():
-            raise DRFValidationError({"detail": "This email is already registered."})
+        if email_is_registered(invitation.email):
+            raise _InvitationEmailExists
 
         ser = InvitationAcceptSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
 
-        # Create user + membership in a single transaction
-        with transaction.atomic():
-            user = User.objects.create_user(
-                email=invitation.email,
-                password=ser.validated_data["password"],
-                full_name=ser.validated_data["full_name"],
-                account_type=AccountType.ORG_MEMBER,
-                is_verified=True,  # trusted: invited by existing member
-            )
-            OrgMember.objects.create(
-                org=org,
-                user=user,
-                role=invitation.role,
-            )
-            invitation.status = InvitationStatus.ACCEPTED
-            invitation.save(update_fields=["status"])
+        from apps.orgs.services import accept_invitation
 
-        refresh = create_refresh_token(user)
-        access = create_access_token(user)
+        _user, org = accept_invitation(
+            invitation,
+            password=ser.validated_data["password"],
+            full_name=ser.validated_data["full_name"],
+        )
+
         return Response(
             {
                 "org": OrgSerializer(org).data,
-                "access_token": access,
-                "refresh_token": refresh,
-                "token_type": "Bearer",
+                "detail": "Account created. Check your email to verify and sign in.",
+                "code": "verification_email_sent",
             },
             status=status.HTTP_201_CREATED,
         )
 
 
-class InvitationDeclineView(APIView):
+class InvitationDeclineView(OrgsScopedView):
     """POST /api/v1/invitations/{token}/decline/ — decline an invitation."""
 
-    permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "orgs"
+    permission_classes: ClassVar[list[type[IsAuthenticated]]] = [IsAuthenticated]  # type: ignore[misc]
+    throttle_scope = "auth"
 
     @extend_schema(request=None, responses={204: None}, tags=["orgs"])
     def post(self, request: Request, token: str) -> Response:
         invitation = get_object_or_404(Invitation, token=token, status=InvitationStatus.PENDING)
-        invitation.status = InvitationStatus.CANCELLED
+        # Require the authenticated user's email to match the invitee's. Prevents
+        # a leaked/guessed token from silently cancelling someone else's invite.
+        user = get_user(request)
+        if user.email.lower() != invitation.email.lower():
+            raise _InvitationAddressedToOther
+        invitation.status = InvitationStatus.DECLINED
         invitation.save(update_fields=["status"])
         return Response(status=status.HTTP_204_NO_CONTENT)

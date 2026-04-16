@@ -34,6 +34,8 @@ def cleanup_orphaned_org_accounts() -> None:
     """
     from datetime import UTC, datetime, timedelta
 
+    from django.db.models import Subquery
+
     from apps.orgs.models import OrgMember
     from apps.users.models import AccountType, User
 
@@ -42,9 +44,46 @@ def cleanup_orphaned_org_accounts() -> None:
         account_type=AccountType.ORG_MEMBER,
         created_at__lt=cutoff,
     ).exclude(
-        id__in=OrgMember.objects.values_list("user_id", flat=True),
+        id__in=Subquery(OrgMember.objects.values("user_id")),
     )
-    count = orphans.count()
-    if count:
-        orphans.delete()
-        logger.info("Cleaned up %d orphaned org-member accounts", count)
+    # _, details has a mapping but we only need the aggregate count for logging
+    deleted, _ = orphans.delete()
+    if deleted:
+        logger.info("Cleaned up %d orphaned org-member accounts", deleted)
+
+
+_REFRESH_TOKEN_DELETE_BATCH = 10_000
+
+
+@app.task  # type: ignore[untyped-decorator]  # celery has no stubs
+def cleanup_expired_refresh_tokens() -> None:
+    """Delete refresh token rows whose expires_at has passed.
+
+    Expired tokens are already rejected at verification time, but the rows
+    accumulate indefinitely without a cleanup task. Delete in bounded batches
+    so a backlog of millions of expired rows can't take out a long table-wide
+    lock.
+    """
+    from datetime import UTC, datetime
+
+    from apps.users.models import RefreshToken
+
+    now = datetime.now(UTC)
+    total_deleted = 0
+    while True:
+        # Use an id-subquery so the delete is bounded by the batch size; the
+        # ORM doesn't accept LIMIT directly on .delete().
+        ids = list(
+            RefreshToken.objects.filter(expires_at__lt=now).values_list("id", flat=True)[
+                :_REFRESH_TOKEN_DELETE_BATCH
+            ]
+        )
+        if not ids:
+            break
+        deleted, _ = RefreshToken.objects.filter(id__in=ids).delete()
+        total_deleted += deleted
+        if deleted < _REFRESH_TOKEN_DELETE_BATCH:
+            break
+
+    if total_deleted:
+        logger.info("Pruned %d expired refresh tokens", total_deleted)

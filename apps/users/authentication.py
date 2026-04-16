@@ -10,7 +10,7 @@ import hashlib
 import logging
 import secrets
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING
 
 import jwt
 from django.conf import settings
@@ -20,6 +20,11 @@ from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.request import Request
 
 from apps.users.models import AUTH_USER_CACHE_KEY, RefreshToken, User
+
+if TYPE_CHECKING:
+    from apps.users.models import EmailVerificationToken, PasswordResetToken
+
+    OneTimeTokenModel = type[EmailVerificationToken] | type[PasswordResetToken]
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +40,7 @@ _ALGORITHM = "HS256"
 
 
 def _get_signing_key() -> str:
-    return settings.SECRET_KEY
+    return settings.JWT_SIGNING_KEY
 
 
 def _hash_token(raw: str) -> str:
@@ -120,7 +125,7 @@ def revoke_all_refresh_tokens(user: User) -> None:
 
 
 def _create_one_time_token(
-    model_class: Any,  # noqa: ANN401
+    model_class: OneTimeTokenModel,
     user: User,
     lifetime: timedelta,
 ) -> str:
@@ -134,7 +139,11 @@ def _create_one_time_token(
     return raw
 
 
-def _verify_one_time_token(model_class: Any, raw_token: str, label: str) -> User:  # noqa: ANN401
+def _verify_one_time_token(
+    model_class: OneTimeTokenModel,
+    raw_token: str,
+    label: str,
+) -> User:
     """Validate and consume a one-time token. Returns the user.
 
     Raises AuthenticationFailed on invalid/expired/used tokens.
@@ -219,11 +228,12 @@ class JWTAuthentication(BaseAuthentication):
         if payload.get("type") != "access":
             raise AuthenticationFailed({"detail": "Invalid token type.", "code": "invalid_token"})
 
-        user_id = str(payload.get("sub", ""))
-        if not user_id:
+        sub = payload.get("sub")
+        if not isinstance(sub, str) or not sub:
             raise AuthenticationFailed(
                 {"detail": "Token missing 'sub' claim.", "code": "invalid_token"}
             )
+        user_id = sub
 
         cache_key = AUTH_USER_CACHE_KEY.format(user_id)
         user: User | None = cache.get(cache_key)

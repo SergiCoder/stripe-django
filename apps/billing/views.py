@@ -8,15 +8,13 @@ from uuid import UUID
 
 from asgiref.sync import async_to_sync
 from django.core.cache import cache
-from django.db.models import Q
 from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
 from rest_framework import serializers as drf_serializers
 from rest_framework import status
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import APIException, NotFound, ValidationError
 from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from saasmint_core.domain.stripe_customer import StripeCustomer
 from saasmint_core.domain.subscription import Subscription
@@ -33,14 +31,12 @@ from saasmint_core.services.subscriptions import (
     update_seat_count,
 )
 
+from apps.base_views import BillingScopedView
 from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, ExchangeRate, PlanContext, PlanPrice
 from apps.billing.models import Plan as PlanModel
 from apps.billing.models import Product as ProductModel
 from apps.billing.models import Subscription as SubscriptionModel
-from apps.billing.repositories import (
-    DjangoStripeCustomerRepository,
-    DjangoSubscriptionRepository,
-)
+from apps.billing.repositories import get_billing_repos
 from apps.billing.serializers import (
     CheckoutRequestSerializer,
     PlanSerializer,
@@ -49,12 +45,27 @@ from apps.billing.serializers import (
     SubscriptionSerializer,
     UpdateSubscriptionSerializer,
 )
-from apps.users.models import AccountType
+from apps.billing.services import plan_context_for
+from apps.users.models import AccountType, User
 from helpers import get_user
 
 logger = logging.getLogger(__name__)
 
 MIN_TEAM_SEATS = 1
+
+
+class _AccountTypeMismatch(APIException):
+    """409 — account_type does not match the plan's context (personal vs team).
+
+    Raising a bare ``ValidationError({"detail": "..."})`` would coerce the
+    string into a list (``{"detail": ["..."]}``) and escape past the custom
+    exception middleware, leaking DRF's internal shape. A typed
+    ``APIException`` keeps the envelope flat and carries a stable ``code``.
+    """
+
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = "Account type does not match the plan's context."
+    default_code = "account_type_mismatch"
 
 _CURRENCY_PARAM = OpenApiParameter(
     name="currency",
@@ -64,19 +75,22 @@ _CURRENCY_PARAM = OpenApiParameter(
 )
 
 
-def _resolve_display_currency(request: Request) -> str:
-    """Resolve the display currency for a request.
+def _resolve_display_currency(
+    query_currency: str | None,
+    user: User | None,
+) -> str:
+    """Resolve the display currency.
 
-    Priority for anonymous: ``?currency=`` query param → ``"usd"``.
-    Priority for authenticated: ``?currency=`` → ``user.preferred_currency`` → ``"usd"``.
+    Priority: explicit query param → ``user.preferred_currency`` (if any) → USD.
     """
-    qp = request.query_params.get("currency", "").lower()
-    if qp in SUPPORTED_CURRENCIES:
+    if query_currency is not None and query_currency != "":
+        qp = query_currency.lower()
+        if qp not in SUPPORTED_CURRENCIES:
+            raise ValidationError({"currency": [f"Unsupported currency: {query_currency!r}."]})
         return qp
 
-    user = getattr(request, "user", None)
-    if user is not None and getattr(user, "is_authenticated", False):
-        preferred: str | None = getattr(user, "preferred_currency", None)
+    if user is not None:
+        preferred = user.preferred_currency
         if preferred and preferred.lower() in SUPPORTED_CURRENCIES:
             return preferred.lower()
 
@@ -109,23 +123,25 @@ def _get_exchange_rate(currency: str) -> tuple[str, float]:
 
 def _currency_context(request: Request) -> dict[str, object]:
     """Build serializer context dict with currency and rate."""
-    currency, rate = _get_exchange_rate(_resolve_display_currency(request))
+    user: User | None = request.user if request.user.is_authenticated else None
+    resolved = _resolve_display_currency(request.query_params.get("currency"), user)
+    currency, rate = _get_exchange_rate(resolved)
     return {"currency": currency, "rate": rate}
 
 
-_customer_repo = DjangoStripeCustomerRepository()
-_subscription_repo = DjangoSubscriptionRepository()
-
-
-def _validate_quantity_for_plan(plan_price: PlanPrice, quantity: int) -> int:
+def _validate_quantity_for_context(context: PlanContext, quantity: int) -> int:
     """Enforce seat rules: personal plans always 1, team plans >= MIN_TEAM_SEATS."""
-    if plan_price.plan.context == PlanContext.PERSONAL:
+    if context == PlanContext.PERSONAL:
         if quantity != 1:
             raise ValidationError("Personal plans do not support multiple seats.")
         return 1
     if quantity < MIN_TEAM_SEATS:
         raise ValidationError(f"Team plans require at least {MIN_TEAM_SEATS} seats.")
     return quantity
+
+
+def _validate_quantity_for_plan(plan_price: PlanPrice, quantity: int) -> int:
+    return _validate_quantity_for_context(PlanContext(plan_price.plan.context), quantity)
 
 
 async def _get_customer_and_paid_subscription(
@@ -138,10 +154,11 @@ async def _get_customer_and_paid_subscription(
     as a non-optional ``str`` lets callers avoid re-checking for ``None``.
     Raises NotFound when the customer or paid sub is missing.
     """
-    customer = await _customer_repo.get_by_user_id(user_id)
+    repos = get_billing_repos()
+    customer = await repos.customers.get_by_user_id(user_id)
     if customer is None:
         raise NotFound("No Stripe customer found.")
-    sub = await _subscription_repo.get_active_for_customer(customer.id)
+    sub = await repos.subscriptions.get_active_for_customer(customer.id)
     if sub is None or sub.stripe_id is None:
         raise NotFound("No active subscription found.")
     return customer, sub, sub.stripe_id
@@ -159,6 +176,16 @@ def _get_active_plan_price(plan_price_id: UUID) -> PlanPrice:
     return plan_price
 
 
+def _catalog_envelope(results: list[dict[str, object]]) -> dict[str, object]:
+    """Wrap catalog results in a DRF-style paginated envelope.
+
+    The catalog is bounded, so ``next`` and ``previous`` are always ``None``
+    and ``count`` is simply ``len(results)`` — but emitting the same shape as
+    real paginated endpoints lets clients share one decoder.
+    """
+    return {"count": len(results), "next": None, "previous": None, "results": results}
+
+
 class PlanListView(APIView):
     """GET /api/v1/billing/plans — list active plans with prices (public)."""
 
@@ -166,10 +193,19 @@ class PlanListView(APIView):
 
     @extend_schema(
         parameters=[_CURRENCY_PARAM],
-        responses=PlanSerializer(many=True),
+        responses=inline_serializer(
+            "PlanListResponse",
+            {
+                "count": drf_serializers.IntegerField(),
+                "next": drf_serializers.URLField(allow_null=True),
+                "previous": drf_serializers.URLField(allow_null=True),
+                "results": PlanSerializer(many=True),
+            },
+        ),
         description=(
-            "List all active plans with prices. Not paginated"
-            " — the catalog is bounded to a small number of plans."
+            "List all active plans with prices. Emits the DRF paginated envelope"
+            " (``count``/``next``/``previous``/``results``) — the catalog is bounded,"
+            " so ``next`` and ``previous`` are always ``null``."
         ),
         tags=["billing"],
         auth=[],
@@ -179,15 +215,10 @@ class PlanListView(APIView):
 
         # Authenticated users only see plans matching their account type
         if request.user.is_authenticated:
-            context_filter = (
-                PlanContext.TEAM
-                if request.user.account_type == AccountType.ORG_MEMBER
-                else PlanContext.PERSONAL
-            )
-            qs = qs.filter(context=context_filter)
+            qs = qs.filter(context=plan_context_for(request.user))
 
         data = PlanSerializer(qs, many=True, context=_currency_context(request)).data
-        return Response(data)
+        return Response(_catalog_envelope(list(data)))
 
 
 class ProductListView(APIView):
@@ -195,28 +226,34 @@ class ProductListView(APIView):
 
     @extend_schema(
         parameters=[_CURRENCY_PARAM],
-        responses=ProductSerializer(many=True),
+        responses=inline_serializer(
+            "ProductListResponse",
+            {
+                "count": drf_serializers.IntegerField(),
+                "next": drf_serializers.URLField(allow_null=True),
+                "previous": drf_serializers.URLField(allow_null=True),
+                "results": ProductSerializer(many=True),
+            },
+        ),
         description=(
-            "List all active one-time products with prices. Not paginated"
-            " — the catalog is bounded to a small number of products."
+            "List all active one-time products with prices. Emits the DRF paginated envelope"
+            " (``count``/``next``/``previous``/``results``) — the catalog is bounded,"
+            " so ``next`` and ``previous`` are always ``null``."
         ),
         tags=["billing"],
     )
     def get(self, request: Request) -> Response:
         products = ProductModel.objects.filter(is_active=True).select_related("price")
         data = ProductSerializer(products, many=True, context=_currency_context(request)).data
-        return Response(data)
+        return Response(_catalog_envelope(list(data)))
 
 
-class CheckoutSessionView(APIView):
+class CheckoutSessionView(BillingScopedView):
     """POST /api/v1/billing/checkout-sessions — create a Stripe Checkout Session."""
-
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "billing"
 
     @extend_schema(
         request=CheckoutRequestSerializer,
-        responses={201: inline_serializer("CheckoutResponse", {"url": drf_serializers.URLField()})},
+        responses={200: inline_serializer("CheckoutResponse", {"url": drf_serializers.URLField()})},
         tags=["billing"],
     )
     def post(self, request: Request) -> Response:
@@ -232,14 +269,12 @@ class CheckoutSessionView(APIView):
 
         # Enforce account_type / plan context match
         if is_team and user.account_type != AccountType.ORG_MEMBER:
-            raise ValidationError(
-                {
-                    "detail": "Only org accounts can check out team plans. "
-                    "Register at /api/v1/auth/register/org-owner/ first."
-                }
+            raise _AccountTypeMismatch(
+                "Only org accounts can check out team plans. "
+                "Register at /api/v1/auth/register/org-owner/ first."
             )
         if not is_team and user.account_type != AccountType.PERSONAL:
-            raise ValidationError({"detail": "Org accounts cannot check out personal plans."})
+            raise _AccountTypeMismatch("Org accounts cannot check out personal plans.")
 
         # Team plans require org_name
         if is_team:
@@ -264,7 +299,7 @@ class CheckoutSessionView(APIView):
                 email=str(user.email),
                 name=user.full_name,
                 locale=user.preferred_locale,
-                customer_repo=_customer_repo,
+                customer_repo=get_billing_repos().customers,
             )
             return await create_checkout_session(
                 stripe_customer_id=customer.stripe_id,
@@ -279,18 +314,15 @@ class CheckoutSessionView(APIView):
             )
 
         url = async_to_sync(_do)()
-        return Response({"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url})
+        return Response({"url": url})
 
 
-class PortalSessionView(APIView):
+class PortalSessionView(BillingScopedView):
     """POST /api/v1/billing/portal-sessions — create a Stripe Customer Portal session."""
-
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "billing"
 
     @extend_schema(
         request=PortalRequestSerializer,
-        responses={201: inline_serializer("PortalResponse", {"url": drf_serializers.URLField()})},
+        responses={200: inline_serializer("PortalResponse", {"url": drf_serializers.URLField()})},
         tags=["billing"],
     )
     def post(self, request: Request) -> Response:
@@ -304,7 +336,7 @@ class PortalSessionView(APIView):
                 email=str(user.email),
                 name=user.full_name,
                 locale=user.preferred_locale,
-                customer_repo=_customer_repo,
+                customer_repo=get_billing_repos().customers,
             )
             return await create_billing_portal_session(
                 stripe_customer_id=customer.stripe_id,
@@ -313,14 +345,40 @@ class PortalSessionView(APIView):
             )
 
         url = async_to_sync(_do)()
-        return Response({"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url})
+        return Response({"url": url})
 
 
-class SubscriptionView(APIView):
-    """GET/PATCH/DELETE /api/v1/billing/subscription — manage the current subscription."""
+def _get_active_subscription_for_user(user: User) -> SubscriptionModel:
+    """Fetch the latest active subscription for a user (paid or free)."""
+    # Org members may only reach an org subscription via their is_billing flag.
+    # Non-billing members must not see the org's subscription details.
+    if user.account_type == AccountType.ORG_MEMBER:
+        from apps.orgs.models import OrgMember
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "billing"
+        if not OrgMember.objects.filter(user_id=user.id, is_billing=True).exists():
+            raise NotFound("No active subscription found.")
+    customer = getattr(user, "stripe_customer", None)
+    customer_id = customer.id if customer is not None else None
+    # Split into two queries instead of ORing `user` with `stripe_customer_id`
+    # so each query can use its own partial index (idx_sub_user_status /
+    # idx_sub_customer_status) instead of degenerating into a scan.
+    base = SubscriptionModel.objects.select_related("plan__price").filter(
+        status__in=ACTIVE_SUBSCRIPTION_STATUSES
+    )
+    sub_user = base.filter(user_id=user.id).order_by("-created_at").first()
+    sub_customer = (
+        base.filter(stripe_customer_id=customer_id).order_by("-created_at").first()
+        if customer_id is not None
+        else None
+    )
+    candidates = [s for s in (sub_user, sub_customer) if s is not None]
+    if not candidates:
+        raise NotFound("No active subscription found.")
+    return max(candidates, key=lambda s: s.created_at)
+
+
+class SubscriptionView(BillingScopedView):
+    """GET/PATCH/DELETE /api/v1/billing/subscriptions/me/ — manage current subscription."""
 
     @extend_schema(
         parameters=[_CURRENCY_PARAM],
@@ -329,23 +387,15 @@ class SubscriptionView(APIView):
     )
     def get(self, request: Request) -> Response:
         user = get_user(request)
-        customer_id = getattr(getattr(user, "stripe_customer", None), "id", None)
-
-        q = Q(user=user)
-        if customer_id is not None:
-            q |= Q(stripe_customer_id=customer_id)
-
-        try:
-            sub = (
-                SubscriptionModel.objects.select_related("plan__price")
-                .filter(q, status__in=ACTIVE_SUBSCRIPTION_STATUSES)
-                .latest("created_at")
-            )
-        except SubscriptionModel.DoesNotExist as exc:
-            raise NotFound("No active subscription found.") from exc
+        sub = _get_active_subscription_for_user(user)
         return Response(SubscriptionSerializer(sub, context=_currency_context(request)).data)
 
-    @extend_schema(request=UpdateSubscriptionSerializer, responses={204: None}, tags=["billing"])
+    @extend_schema(
+        parameters=[_CURRENCY_PARAM],
+        request=UpdateSubscriptionSerializer,
+        responses={200: SubscriptionSerializer},
+        tags=["billing"],
+    )
     def patch(self, request: Request) -> Response:
         user = get_user(request)
         ser = UpdateSubscriptionSerializer(data=request.data)
@@ -360,18 +410,19 @@ class SubscriptionView(APIView):
             _validate_quantity_for_plan(plan_price, data["quantity"])
 
         async def _do() -> None:
+            repos = get_billing_repos()
             customer, sub, stripe_sub_id = await _get_customer_and_paid_subscription(user.id)
             if "cancel_at_period_end" in data:
                 if data["cancel_at_period_end"]:
                     await cancel_subscription(
                         stripe_customer_id=customer.id,
                         at_period_end=True,
-                        subscription_repo=_subscription_repo,
+                        subscription_repo=repos.subscriptions,
                     )
                 else:
                     await resume_subscription(
                         stripe_customer_id=customer.id,
-                        subscription_repo=_subscription_repo,
+                        subscription_repo=repos.subscriptions,
                     )
             elif plan_price:
                 await change_plan(
@@ -384,19 +435,28 @@ class SubscriptionView(APIView):
                 # Seat-only update: enforce per-context seat rules against the
                 # current subscription's plan, otherwise a personal sub could
                 # be bumped to N seats and a team sub down to 1.
-                current_price = await PlanPrice.objects.select_related("plan").aget(
-                    plan_id=sub.plan_id
-                )
-                _validate_quantity_for_plan(current_price, data["quantity"])
+                current_plan = await PlanModel.objects.only("context").aget(id=sub.plan_id)
+                _validate_quantity_for_context(PlanContext(current_plan.context), data["quantity"])
                 await update_seat_count(
                     stripe_subscription_id=stripe_sub_id,
                     quantity=data["quantity"],
                 )
 
         async_to_sync(_do)()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        sub = _get_active_subscription_for_user(user)
+        return Response(SubscriptionSerializer(sub, context=_currency_context(request)).data)
 
-    @extend_schema(request=None, responses={204: None}, tags=["billing"])
+    @extend_schema(
+        parameters=[_CURRENCY_PARAM],
+        request=None,
+        responses={202: SubscriptionSerializer},
+        description=(
+            "Schedule subscription cancellation at the end of the current billing period."
+            " Returns 202 Accepted — the subscription remains active until the period end"
+            " timestamp returned in the body."
+        ),
+        tags=["billing"],
+    )
     def delete(self, request: Request) -> Response:
         user = get_user(request)
 
@@ -405,8 +465,12 @@ class SubscriptionView(APIView):
             await cancel_subscription(
                 stripe_customer_id=customer.id,
                 at_period_end=True,
-                subscription_repo=_subscription_repo,
+                subscription_repo=get_billing_repos().subscriptions,
             )
 
         async_to_sync(_do)()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        sub = _get_active_subscription_for_user(user)
+        return Response(
+            SubscriptionSerializer(sub, context=_currency_context(request)).data,
+            status=status.HTTP_202_ACCEPTED,
+        )

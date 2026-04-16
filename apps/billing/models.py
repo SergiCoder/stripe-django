@@ -60,6 +60,14 @@ class Plan(models.Model):
                 name="uniq_active_plan_per_context_tier_interval",
             ),
         ]
+        indexes = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
+            # Hot path for PlanListView: filter by `context` among active plans.
+            models.Index(
+                fields=["context"],
+                name="idx_plan_active_context",
+                condition=models.Q(is_active=True),
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.name} ({self.interval})"
@@ -124,6 +132,9 @@ class StripeCustomer(models.Model):
 class Subscription(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     stripe_id = models.CharField(max_length=255, unique=True, null=True, blank=True)
+    # CASCADE is intentional: subscriptions without a customer have no meaning,
+    # and StripeCustomer is only purged when its owning user/org is deleted,
+    # at which point the subscription history is no longer useful for audit.
     stripe_customer = models.ForeignKey(
         StripeCustomer,
         on_delete=models.CASCADE,
@@ -155,11 +166,28 @@ class Subscription(models.Model):
         indexes = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             models.Index(fields=["stripe_customer", "status"], name="idx_sub_customer_status"),
             models.Index(fields=["user", "status"], name="idx_sub_user_status"),
+            # Hot path: "find the active subscription for this owner". Partial
+            # index keeps the tree small by excluding terminal-state rows.
+            models.Index(
+                fields=["stripe_customer", "user"],
+                name="idx_sub_active_owner",
+                condition=models.Q(status__in=("active", "trialing", "past_due")),
+            ),
         ]
         constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             models.CheckConstraint(
                 condition=(models.Q(user__isnull=False) | models.Q(stripe_customer__isnull=False)),
                 name="subscription_has_owner",
+            ),
+            # Enforce at most one free subscription per user. Paid rows
+            # (stripe_id IS NOT NULL) are excluded, so the constraint only
+            # guards the free fallback path — backstopping the row lock in
+            # assign_free_plan against duplicate-free races and preventing
+            # paid/free coexistence from ever going unbounded on the free side.
+            models.UniqueConstraint(
+                fields=["user"],
+                condition=models.Q(stripe_id__isnull=True),
+                name="uniq_free_subscription_per_user",
             ),
         ]
 
@@ -180,6 +208,14 @@ class Product(models.Model):
 
     class Meta:
         db_table = "products"
+        indexes = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
+            # Hot path for ProductListView: fetching active products only.
+            models.Index(
+                fields=["is_active"],
+                name="idx_product_active",
+                condition=models.Q(is_active=True),
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.name} ({self.credits} credits)"
@@ -205,12 +241,13 @@ class ExchangeRate(models.Model):
     One row per supported currency (excluding USD).
     """
 
-    currency = models.CharField(max_length=3, unique=True)
+    currency = models.CharField(max_length=3, primary_key=True)
     rate = models.DecimalField(max_digits=18, decimal_places=8)
     fetched_at = models.DateTimeField()
 
     class Meta:
         db_table = "exchange_rates"
+        ordering = ("currency",)
 
     def __str__(self) -> str:
         return f"{self.currency.upper()}: {self.rate}"

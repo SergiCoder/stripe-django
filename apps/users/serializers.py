@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import functools
 from typing import Any
+from zoneinfo import available_timezones
 
 from rest_framework import serializers
 
 from apps.users.models import User
+
+
+@functools.cache
+def _available_timezones() -> frozenset[str]:
+    return frozenset(available_timezones())
 
 
 class _PhoneReadSerializer(serializers.Serializer[User]):
@@ -42,6 +49,9 @@ class UserSerializer(serializers.ModelSerializer[User]):
         read_only_fields = fields
 
     def get_linked_providers(self, obj: User) -> list[str]:
+        prefetched = getattr(obj, "_prefetched_objects_cache", {})
+        if "social_accounts" in prefetched:
+            return [sa.provider for sa in obj.social_accounts.all()]
         return list(obj.social_accounts.values_list("provider", flat=True))
 
     def to_representation(self, instance: User) -> dict[str, Any]:
@@ -68,7 +78,6 @@ class _PhoneWriteSerializer(serializers.Serializer[User]):
 
 class UpdateUserSerializer(serializers.Serializer[User]):
     full_name = serializers.CharField(min_length=3, max_length=255, required=False)
-    avatar_url = serializers.CharField(max_length=500, required=False, allow_null=True)
     preferred_locale = serializers.CharField(max_length=10, required=False)
     preferred_currency = serializers.CharField(max_length=3, required=False)
     phone = _PhoneWriteSerializer(required=False, allow_null=True)
@@ -90,9 +99,7 @@ class UpdateUserSerializer(serializers.Serializer[User]):
     def validate_timezone(self, value: str | None) -> str | None:
         if value is None:
             return value
-        from zoneinfo import available_timezones
-
-        if value not in available_timezones():
+        if value not in _available_timezones():
             raise serializers.ValidationError(
                 "Unsupported timezone. Must be a valid IANA timezone identifier."
             )

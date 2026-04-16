@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
 import stripe
 
+from saasmint_core.domain.stripe_event import StripeEvent
 from saasmint_core.domain.subscription import Plan, PlanTier, SubscriptionStatus
-from saasmint_core.exceptions import WebhookDataError, WebhookVerificationError
-from saasmint_core.services.webhooks import WebhookRepos, handle_stripe_event
+from saasmint_core.exceptions import WebhookDataError
+from saasmint_core.services.webhooks import WebhookRepos, process_stored_event
 from tests.conftest import (
     InMemoryPlanRepository,
     InMemoryStripeCustomerRepository,
@@ -76,66 +76,39 @@ def _sub_event(
     }
 
 
-# ── handle_stripe_event: top-level ───────────────────────────────────────────
-
-
-@pytest.mark.anyio
-async def test_invalid_signature_raises_webhook_verification_error() -> None:
-    repos = _make_repos()
-    with patch(
-        "stripe.Webhook.construct_event",
-        side_effect=stripe.error.SignatureVerificationError("bad sig", "t=1"),  # type: ignore[no-untyped-call]  # Stripe stub missing return type annotation on SignatureVerificationError constructor
-    ):
-        with pytest.raises(WebhookVerificationError):
-            await handle_stripe_event(b"payload", "bad_sig", "secret", repos)
-
-
-@pytest.mark.anyio
-async def test_duplicate_event_is_no_op() -> None:
-    event_repo = InMemoryStripeEventRepository()
-    repos = _make_repos(event_repo=event_repo)
-
-    # Pre-insert the event so it looks like a duplicate
-    from saasmint_core.domain.stripe_event import StripeEvent
-
-    existing = StripeEvent(
-        id=uuid4(),
-        stripe_id="evt_dup",
-        type="invoice.payment_succeeded",
-        livemode=False,
-        payload={},
-        created_at=datetime.now(UTC),
+async def _persist(repo: InMemoryStripeEventRepository, event: dict[str, object]) -> str:
+    """Seed the event store the way the webhook view would before enqueueing."""
+    stripe_id = str(event["id"])
+    await repo.save(
+        StripeEvent(
+            id=uuid4(),
+            stripe_id=stripe_id,
+            type=str(event["type"]),
+            livemode=bool(event["livemode"]),
+            payload=event,  # type: ignore[arg-type]  # mirrors webhook view; dict[str, Any] tolerated
+            created_at=datetime.now(UTC),
+        )
     )
-    await event_repo.save(existing)
+    return stripe_id
 
-    mock_event = {
-        "id": "evt_dup",
-        "type": "invoice.payment_succeeded",
-        "livemode": False,
-        "data": {"object": {"id": "in_123"}},
-    }
 
-    with patch("stripe.Webhook.construct_event", return_value=mock_event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
-
-    # Event count unchanged (no second save)
-    assert len(list(event_repo._store.values())) == 1
+# ── process_stored_event: top-level ──────────────────────────────────────────
 
 
 @pytest.mark.anyio
-async def test_new_event_is_saved_and_processed() -> None:
+async def test_new_event_is_marked_processed() -> None:
     event_repo = InMemoryStripeEventRepository()
     repos = _make_repos(event_repo=event_repo)
 
-    mock_event = {
+    event = {
         "id": "evt_new",
         "type": "invoice.payment_succeeded",
         "livemode": False,
         "data": {"object": {"id": "in_new"}},
     }
+    stripe_id = await _persist(event_repo, event)
 
-    with patch("stripe.Webhook.construct_event", return_value=mock_event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
+    await process_stored_event(event, stripe_id, repos)
 
     saved = event_repo._store["evt_new"]
     assert saved.processed_at is not None
@@ -143,35 +116,74 @@ async def test_new_event_is_saved_and_processed() -> None:
 
 
 @pytest.mark.anyio
-async def test_dispatch_failure_marks_event_failed_and_reraises() -> None:
+async def test_dispatch_failure_marks_event_failed_and_reraises(monkeypatch) -> None:
     event_repo = InMemoryStripeEventRepository()
-    customer_repo = InMemoryStripeCustomerRepository()
-    repos = _make_repos(event_repo=event_repo, customer_repo=customer_repo)
+    repos = _make_repos(event_repo=event_repo)
 
-    # customer.subscription.created will call _sync_subscription, which calls
-    # customer_repo.get_by_stripe_id → returns None → no error raised in normal
-    # flow (just logs warning). Use a different approach: raise from event_repo.mark_processed.
-    # Instead, patch _dispatch directly to raise.
-    mock_event = {
+    event = {
         "id": "evt_fail",
         "type": "customer.subscription.created",
         "livemode": False,
         "data": {"object": {}},
     }
+    stripe_id = await _persist(event_repo, event)
 
-    with (
-        patch("stripe.Webhook.construct_event", return_value=mock_event),
-        patch(
-            "saasmint_core.services.webhooks._dispatch",
-            side_effect=RuntimeError("dispatch boom"),
-        ),
-    ):
-        with pytest.raises(RuntimeError, match="dispatch boom"):
-            await handle_stripe_event(b"payload", "sig", "secret", repos)
+    async def _boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("dispatch boom")
+
+    monkeypatch.setattr("saasmint_core.services.webhooks._dispatch", _boom)
+
+    with pytest.raises(RuntimeError, match="dispatch boom"):
+        await process_stored_event(event, stripe_id, repos)
 
     saved = event_repo._store["evt_fail"]
     assert saved.error == "dispatch boom"
     assert saved.processed_at is None
+
+
+@pytest.mark.anyio
+async def test_permanent_error_marks_failed_and_propagates_for_no_retry() -> None:
+    """WebhookDataError marks the event failed and surfaces as-is so the
+    Celery task can skip retrying."""
+    event_repo = InMemoryStripeEventRepository()
+    repos = _make_repos(event_repo=event_repo)
+
+    event = _sub_event("customer.subscription.created", stripe_customer_id="cus_unknown")
+    stripe_id = await _persist(event_repo, event)
+
+    with pytest.raises(WebhookDataError, match="Unknown customer"):
+        await process_stored_event(event, stripe_id, repos)
+
+    saved = event_repo._store["evt_webhook"]
+    assert saved.error is not None
+    assert saved.processed_at is None
+
+
+@pytest.mark.anyio
+async def test_transient_error_marks_failed_and_propagates_for_retry(monkeypatch) -> None:
+    """Transient errors (StripeError / ConnectionError) mark the event failed
+    and surface as-is so the Celery task can retry."""
+    event_repo = InMemoryStripeEventRepository()
+    repos = _make_repos(event_repo=event_repo)
+
+    event = {
+        "id": "evt_transient",
+        "type": "invoice.payment_succeeded",
+        "livemode": False,
+        "data": {"object": {"id": "in_transient"}},
+    }
+    stripe_id = await _persist(event_repo, event)
+
+    async def _flaky(*_args: object, **_kwargs: object) -> None:
+        raise ConnectionError("temporary blip")
+
+    monkeypatch.setattr("saasmint_core.services.webhooks._dispatch", _flaky)
+
+    with pytest.raises(ConnectionError):
+        await process_stored_event(event, stripe_id, repos)
+
+    saved = event_repo._store["evt_transient"]
+    assert saved.error == "temporary blip"
 
 
 # ── _dispatch routing ─────────────────────────────────────────────────────────
@@ -180,6 +192,7 @@ async def test_dispatch_failure_marks_event_failed_and_reraises() -> None:
 @pytest.mark.anyio
 async def test_dispatch_subscription_updated() -> None:
     """customer.subscription.updated also routes to _sync_subscription."""
+    event_repo = InMemoryStripeEventRepository()
     customer_repo = InMemoryStripeCustomerRepository()
     plan_repo = InMemoryPlanRepository()
 
@@ -190,71 +203,58 @@ async def test_dispatch_subscription_updated() -> None:
     price = make_plan_price(plan_id=plan.id, stripe_price_id="price_upd")
     plan_repo._prices[price.id] = price
 
-    repos = _make_repos(customer_repo=customer_repo, plan_repo=plan_repo)
+    repos = _make_repos(event_repo=event_repo, customer_repo=customer_repo, plan_repo=plan_repo)
     event = _sub_event(
         "customer.subscription.updated", stripe_customer_id="cus_upd", price_id="price_upd"
     )
+    stripe_id = await _persist(event_repo, event)
 
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
+    await process_stored_event(event, stripe_id, repos)
 
 
 @pytest.mark.anyio
 async def test_dispatch_invoice_payment_succeeded() -> None:
-    repos = _make_repos()
-    mock_event = {
+    event_repo = InMemoryStripeEventRepository()
+    repos = _make_repos(event_repo=event_repo)
+    event = {
         "id": "evt_inv_paid",
         "type": "invoice.payment_succeeded",
         "livemode": False,
         "data": {"object": {"id": "in_abc"}},
     }
-    with patch("stripe.Webhook.construct_event", return_value=mock_event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
+    stripe_id = await _persist(event_repo, event)
+    await process_stored_event(event, stripe_id, repos)
 
 
 @pytest.mark.anyio
 async def test_dispatch_invoice_payment_failed() -> None:
-    repos = _make_repos()
-    mock_event = {
+    event_repo = InMemoryStripeEventRepository()
+    repos = _make_repos(event_repo=event_repo)
+    event = {
         "id": "evt_inv_fail",
         "type": "invoice.payment_failed",
         "livemode": False,
         "data": {"object": {"id": "in_fail"}},
     }
-    with patch("stripe.Webhook.construct_event", return_value=mock_event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
+    stripe_id = await _persist(event_repo, event)
+    await process_stored_event(event, stripe_id, repos)
 
 
 @pytest.mark.anyio
 async def test_dispatch_unknown_event_type() -> None:
-    repos = _make_repos()
-    mock_event = {
+    event_repo = InMemoryStripeEventRepository()
+    repos = _make_repos(event_repo=event_repo)
+    event = {
         "id": "evt_unknown",
         "type": "some.unknown.event",
         "livemode": False,
         "data": {"object": {}},
     }
-    with patch("stripe.Webhook.construct_event", return_value=mock_event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
+    stripe_id = await _persist(event_repo, event)
+    await process_stored_event(event, stripe_id, repos)
 
 
 # ── _sync_subscription ────────────────────────────────────────────────────────
-
-
-@pytest.mark.anyio
-async def test_sync_subscription_customer_not_found_marks_failed() -> None:
-    """Unknown customer → event marked as failed, error raised."""
-    event_repo = InMemoryStripeEventRepository()
-    repos = _make_repos(event_repo=event_repo)
-    event = _sub_event("customer.subscription.created", stripe_customer_id="cus_unknown")
-
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        with pytest.raises(WebhookDataError, match="Unknown customer"):
-            await handle_stripe_event(b"payload", "sig", "secret", repos)
-
-    saved = event_repo._store["evt_webhook"]
-    assert saved.error is not None
-    assert saved.processed_at is None
 
 
 @pytest.mark.anyio
@@ -271,10 +271,10 @@ async def test_sync_subscription_price_not_found_marks_failed() -> None:
         stripe_customer_id="cus_noprice",
         price_id="price_missing",
     )
+    stripe_id = await _persist(event_repo, event)
 
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        with pytest.raises(WebhookDataError, match="Unknown price"):
-            await handle_stripe_event(b"payload", "sig", "secret", repos)
+    with pytest.raises(WebhookDataError, match="Unknown price"):
+        await process_stored_event(event, stripe_id, repos)
 
     saved = event_repo._store["evt_webhook"]
     assert saved.error is not None
@@ -283,6 +283,7 @@ async def test_sync_subscription_price_not_found_marks_failed() -> None:
 
 @pytest.mark.anyio
 async def test_sync_subscription_creates_new() -> None:
+    event_repo = InMemoryStripeEventRepository()
     customer_repo = InMemoryStripeCustomerRepository()
     plan_repo = InMemoryPlanRepository()
     subscription_repo = InMemorySubscriptionRepository()
@@ -295,6 +296,7 @@ async def test_sync_subscription_creates_new() -> None:
     plan_repo._prices[price.id] = price
 
     repos = _make_repos(
+        event_repo=event_repo,
         customer_repo=customer_repo,
         plan_repo=plan_repo,
         subscription_repo=subscription_repo,
@@ -304,9 +306,9 @@ async def test_sync_subscription_creates_new() -> None:
         stripe_customer_id="cus_new_sub",
         price_id="price_new_sub",
     )
+    stripe_id = await _persist(event_repo, event)
 
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
+    await process_stored_event(event, stripe_id, repos)
 
     subs = list(subscription_repo._store.values())
     assert len(subs) == 1
@@ -316,6 +318,7 @@ async def test_sync_subscription_creates_new() -> None:
 
 @pytest.mark.anyio
 async def test_sync_subscription_updates_existing() -> None:
+    event_repo = InMemoryStripeEventRepository()
     customer_repo = InMemoryStripeCustomerRepository()
     plan_repo = InMemoryPlanRepository()
     subscription_repo = InMemorySubscriptionRepository()
@@ -327,7 +330,6 @@ async def test_sync_subscription_updates_existing() -> None:
     price = make_plan_price(plan_id=plan.id, stripe_price_id="price_upd_sub")
     plan_repo._prices[price.id] = price
 
-    # Pre-existing subscription with same stripe_id
     existing_sub = make_subscription(
         stripe_id="sub_webhook",
         stripe_customer_id=customer.id,
@@ -335,6 +337,7 @@ async def test_sync_subscription_updates_existing() -> None:
     await subscription_repo.save(existing_sub)
 
     repos = _make_repos(
+        event_repo=event_repo,
         customer_repo=customer_repo,
         plan_repo=plan_repo,
         subscription_repo=subscription_repo,
@@ -344,9 +347,9 @@ async def test_sync_subscription_updates_existing() -> None:
         stripe_customer_id="cus_upd_sub",
         price_id="price_upd_sub",
     )
+    stripe_id = await _persist(event_repo, event)
 
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
+    await process_stored_event(event, stripe_id, repos)
 
     updated = subscription_repo._store[existing_sub.id]
     assert updated.id == existing_sub.id  # same ID preserved
@@ -355,6 +358,7 @@ async def test_sync_subscription_updates_existing() -> None:
 @pytest.mark.anyio
 async def test_sync_subscription_quantity_none_defaults_to_one() -> None:
     """Missing quantity in subscription item defaults to 1."""
+    event_repo = InMemoryStripeEventRepository()
     customer_repo = InMemoryStripeCustomerRepository()
     plan_repo = InMemoryPlanRepository()
     subscription_repo = InMemorySubscriptionRepository()
@@ -367,6 +371,7 @@ async def test_sync_subscription_quantity_none_defaults_to_one() -> None:
     plan_repo._prices[price.id] = price
 
     repos = _make_repos(
+        event_repo=event_repo,
         customer_repo=customer_repo,
         plan_repo=plan_repo,
         subscription_repo=subscription_repo,
@@ -377,9 +382,9 @@ async def test_sync_subscription_quantity_none_defaults_to_one() -> None:
         price_id="price_qty",
         quantity=None,  # type: ignore[arg-type]  # intentional: testing that None quantity is coerced to default value of 1
     )
+    stripe_id = await _persist(event_repo, event)
 
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
+    await process_stored_event(event, stripe_id, repos)
 
     sub = next(iter(subscription_repo._store.values()))
     assert sub.quantity == 1
@@ -387,6 +392,7 @@ async def test_sync_subscription_quantity_none_defaults_to_one() -> None:
 
 @pytest.mark.anyio
 async def test_sync_subscription_with_explicit_quantity() -> None:
+    event_repo = InMemoryStripeEventRepository()
     customer_repo = InMemoryStripeCustomerRepository()
     plan_repo = InMemoryPlanRepository()
     subscription_repo = InMemorySubscriptionRepository()
@@ -399,6 +405,7 @@ async def test_sync_subscription_with_explicit_quantity() -> None:
     plan_repo._prices[price.id] = price
 
     repos = _make_repos(
+        event_repo=event_repo,
         customer_repo=customer_repo,
         plan_repo=plan_repo,
         subscription_repo=subscription_repo,
@@ -409,9 +416,9 @@ async def test_sync_subscription_with_explicit_quantity() -> None:
         price_id="price_qty5",
         quantity=5,
     )
+    stripe_id = await _persist(event_repo, event)
 
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
+    await process_stored_event(event, stripe_id, repos)
 
     sub = next(iter(subscription_repo._store.values()))
     assert sub.quantity == 5
@@ -419,6 +426,7 @@ async def test_sync_subscription_with_explicit_quantity() -> None:
 
 @pytest.mark.anyio
 async def test_sync_subscription_with_canceled_at() -> None:
+    event_repo = InMemoryStripeEventRepository()
     customer_repo = InMemoryStripeCustomerRepository()
     plan_repo = InMemoryPlanRepository()
     subscription_repo = InMemorySubscriptionRepository()
@@ -431,6 +439,7 @@ async def test_sync_subscription_with_canceled_at() -> None:
     plan_repo._prices[price.id] = price
 
     repos = _make_repos(
+        event_repo=event_repo,
         customer_repo=customer_repo,
         plan_repo=plan_repo,
         subscription_repo=subscription_repo,
@@ -441,9 +450,9 @@ async def test_sync_subscription_with_canceled_at() -> None:
         price_id="price_cancel_at",
         canceled_at=NOW_TS,
     )
+    stripe_id = await _persist(event_repo, event)
 
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
+    await process_stored_event(event, stripe_id, repos)
 
     sub = next(iter(subscription_repo._store.values()))
     assert sub.canceled_at is not None
@@ -454,33 +463,35 @@ async def test_sync_subscription_with_canceled_at() -> None:
 
 @pytest.mark.anyio
 async def test_subscription_deleted_unknown_sub_logs_warning() -> None:
-    repos = _make_repos()
+    event_repo = InMemoryStripeEventRepository()
+    repos = _make_repos(event_repo=event_repo)
     event = {
         "id": "evt_del_unk",
         "type": "customer.subscription.deleted",
         "livemode": False,
         "data": {"object": {"id": "sub_unknown"}},
     }
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
+    stripe_id = await _persist(event_repo, event)
+    await process_stored_event(event, stripe_id, repos)
 
 
 @pytest.mark.anyio
 async def test_subscription_deleted_marks_canceled() -> None:
+    event_repo = InMemoryStripeEventRepository()
     subscription_repo = InMemorySubscriptionRepository()
     sub = make_subscription(stripe_id="sub_to_delete")
     await subscription_repo.save(sub)
 
-    repos = _make_repos(subscription_repo=subscription_repo)
+    repos = _make_repos(event_repo=event_repo, subscription_repo=subscription_repo)
     event = {
         "id": "evt_del_known",
         "type": "customer.subscription.deleted",
         "livemode": False,
         "data": {"object": {"id": "sub_to_delete"}},
     }
+    stripe_id = await _persist(event_repo, event)
 
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
+    await process_stored_event(event, stripe_id, repos)
 
     updated = subscription_repo._store[sub.id]
     assert updated.status == SubscriptionStatus.CANCELED
@@ -505,13 +516,13 @@ def _seed_free_plan(plan_repo: InMemoryPlanRepository) -> Plan:
 @pytest.mark.anyio
 async def test_upgrade_from_free_removes_orphan_free_subscription() -> None:
     """When a free user upgrades, the free placeholder Subscription is deleted."""
+    event_repo = InMemoryStripeEventRepository()
     customer_repo = InMemoryStripeCustomerRepository()
     plan_repo = InMemoryPlanRepository()
     subscription_repo = InMemorySubscriptionRepository()
 
     user_id = uuid4()
 
-    # Pre-existing free subscription (no Stripe backing)
     free_plan = _seed_free_plan(plan_repo)
     free_sub = make_subscription(
         stripe_id=None,
@@ -521,17 +532,16 @@ async def test_upgrade_from_free_removes_orphan_free_subscription() -> None:
     )
     await subscription_repo.save(free_sub)
 
-    # Customer now exists (created during checkout flow)
     customer = make_stripe_customer(user_id=user_id, stripe_id="cus_upgrade")
     await customer_repo.save(customer)
 
-    # New paid plan + price
     paid_plan = make_plan(name="Personal Pro")
     plan_repo._plans[paid_plan.id] = paid_plan
     paid_price = make_plan_price(plan_id=paid_plan.id, stripe_price_id="price_paid", amount=1900)
     plan_repo._prices[paid_price.id] = paid_price
 
     repos = _make_repos(
+        event_repo=event_repo,
         customer_repo=customer_repo,
         plan_repo=plan_repo,
         subscription_repo=subscription_repo,
@@ -542,9 +552,9 @@ async def test_upgrade_from_free_removes_orphan_free_subscription() -> None:
         stripe_customer_id="cus_upgrade",
         price_id="price_paid",
     )
+    stripe_id = await _persist(event_repo, event)
 
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
+    await process_stored_event(event, stripe_id, repos)
 
     subs = list(subscription_repo._store.values())
     assert len(subs) == 1
@@ -560,6 +570,7 @@ async def test_upgrade_from_free_removes_orphan_free_subscription() -> None:
 @pytest.mark.anyio
 async def test_org_upgrade_does_not_touch_user_free_subs() -> None:
     """Org subscriptions have user_id=None and must not delete unrelated free rows."""
+    event_repo = InMemoryStripeEventRepository()
     customer_repo = InMemoryStripeCustomerRepository()
     plan_repo = InMemoryPlanRepository()
     subscription_repo = InMemorySubscriptionRepository()
@@ -583,6 +594,7 @@ async def test_org_upgrade_does_not_touch_user_free_subs() -> None:
     plan_repo._prices[team_price.id] = team_price
 
     repos = _make_repos(
+        event_repo=event_repo,
         customer_repo=customer_repo,
         plan_repo=plan_repo,
         subscription_repo=subscription_repo,
@@ -593,9 +605,9 @@ async def test_org_upgrade_does_not_touch_user_free_subs() -> None:
         stripe_customer_id="cus_org",
         price_id="price_team",
     )
+    stripe_id = await _persist(event_repo, event)
 
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
+    await process_stored_event(event, stripe_id, repos)
 
     # Other user's free sub is untouched
     assert other_free_sub.id in subscription_repo._store
@@ -612,6 +624,7 @@ async def test_retry_after_crash_still_prunes_free_subscription() -> None:
     see the paid sub already saved and skip the cleanup forever, leaving the
     user with two active subscriptions.
     """
+    event_repo = InMemoryStripeEventRepository()
     customer_repo = InMemoryStripeCustomerRepository()
     plan_repo = InMemoryPlanRepository()
     subscription_repo = InMemorySubscriptionRepository()
@@ -648,6 +661,7 @@ async def test_retry_after_crash_still_prunes_free_subscription() -> None:
     await subscription_repo.save(already_saved_paid)
 
     repos = _make_repos(
+        event_repo=event_repo,
         customer_repo=customer_repo,
         plan_repo=plan_repo,
         subscription_repo=subscription_repo,
@@ -658,9 +672,9 @@ async def test_retry_after_crash_still_prunes_free_subscription() -> None:
         stripe_customer_id="cus_retry",
         price_id="price_paid_retry",
     )
+    stripe_id = await _persist(event_repo, event)
 
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
+    await process_stored_event(event, stripe_id, repos)
 
     subs = list(subscription_repo._store.values())
     assert len(subs) == 1
@@ -671,6 +685,7 @@ async def test_retry_after_crash_still_prunes_free_subscription() -> None:
 @pytest.mark.anyio
 async def test_paid_cancellation_creates_fresh_free_subscription() -> None:
     """When a personal paid sub is canceled, the user is moved back to free."""
+    event_repo = InMemoryStripeEventRepository()
     plan_repo = InMemoryPlanRepository()
     subscription_repo = InMemorySubscriptionRepository()
 
@@ -683,16 +698,18 @@ async def test_paid_cancellation_creates_fresh_free_subscription() -> None:
     )
     await subscription_repo.save(paid_sub)
 
-    repos = _make_repos(plan_repo=plan_repo, subscription_repo=subscription_repo)
+    repos = _make_repos(
+        event_repo=event_repo, plan_repo=plan_repo, subscription_repo=subscription_repo
+    )
     event = {
         "id": "evt_cancel_fallback",
         "type": "customer.subscription.deleted",
         "livemode": False,
         "data": {"object": {"id": "sub_paid_cancel"}},
     }
+    stripe_id = await _persist(event_repo, event)
 
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
+    await process_stored_event(event, stripe_id, repos)
 
     # Old paid sub is canceled
     canceled = subscription_repo._store[paid_sub.id]
@@ -713,6 +730,7 @@ async def test_paid_cancellation_creates_fresh_free_subscription() -> None:
 @pytest.mark.anyio
 async def test_org_cancellation_does_not_create_free_subscription() -> None:
     """Org subs (user_id=None) are skipped — there's no team-level free plan."""
+    event_repo = InMemoryStripeEventRepository()
     plan_repo = InMemoryPlanRepository()
     subscription_repo = InMemorySubscriptionRepository()
     _seed_free_plan(plan_repo)
@@ -720,16 +738,18 @@ async def test_org_cancellation_does_not_create_free_subscription() -> None:
     org_paid_sub = make_subscription(stripe_id="sub_org_cancel", user_id=None)
     await subscription_repo.save(org_paid_sub)
 
-    repos = _make_repos(plan_repo=plan_repo, subscription_repo=subscription_repo)
+    repos = _make_repos(
+        event_repo=event_repo, plan_repo=plan_repo, subscription_repo=subscription_repo
+    )
     event = {
         "id": "evt_org_cancel",
         "type": "customer.subscription.deleted",
         "livemode": False,
         "data": {"object": {"id": "sub_org_cancel"}},
     }
+    stripe_id = await _persist(event_repo, event)
 
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
+    await process_stored_event(event, stripe_id, repos)
 
     assert subscription_repo._store[org_paid_sub.id].status == SubscriptionStatus.CANCELED
     # No new free subscription created
@@ -739,22 +759,25 @@ async def test_org_cancellation_does_not_create_free_subscription() -> None:
 @pytest.mark.anyio
 async def test_cancellation_logs_when_no_free_plan_configured() -> None:
     """Without a configured free plan, cancellation just marks canceled and warns."""
-    plan_repo = InMemoryPlanRepository()  # no free plan seeded
+    event_repo = InMemoryStripeEventRepository()
+    plan_repo = InMemoryPlanRepository()
     subscription_repo = InMemorySubscriptionRepository()
 
     paid_sub = make_subscription(stripe_id="sub_no_free", user_id=uuid4())
     await subscription_repo.save(paid_sub)
 
-    repos = _make_repos(plan_repo=plan_repo, subscription_repo=subscription_repo)
+    repos = _make_repos(
+        event_repo=event_repo, plan_repo=plan_repo, subscription_repo=subscription_repo
+    )
     event = {
         "id": "evt_no_free",
         "type": "customer.subscription.deleted",
         "livemode": False,
         "data": {"object": {"id": "sub_no_free"}},
     }
+    stripe_id = await _persist(event_repo, event)
 
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
+    await process_stored_event(event, stripe_id, repos)
 
     assert subscription_repo._store[paid_sub.id].status == SubscriptionStatus.CANCELED
     assert len(subscription_repo._store) == 1  # no fallback created
@@ -766,6 +789,7 @@ async def test_cancellation_logs_when_no_free_plan_configured() -> None:
 @pytest.mark.anyio
 async def test_sync_subscription_reads_period_from_items_first() -> None:
     """Stripe API 2024-06+ moved current_period_start/end to subscription items."""
+    event_repo = InMemoryStripeEventRepository()
     customer_repo = InMemoryStripeCustomerRepository()
     plan_repo = InMemoryPlanRepository()
     subscription_repo = InMemorySubscriptionRepository()
@@ -781,6 +805,7 @@ async def test_sync_subscription_reads_period_from_items_first() -> None:
     item_end_ts = NOW_TS + 90000
 
     repos = _make_repos(
+        event_repo=event_repo,
         customer_repo=customer_repo,
         plan_repo=plan_repo,
         subscription_repo=subscription_repo,
@@ -813,9 +838,9 @@ async def test_sync_subscription_reads_period_from_items_first() -> None:
             }
         },
     }
+    stripe_id = await _persist(event_repo, event)
 
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
+    await process_stored_event(event, stripe_id, repos)
 
     sub = next(iter(subscription_repo._store.values()))
     assert int(sub.current_period_start.timestamp()) == item_start_ts
@@ -825,9 +850,9 @@ async def test_sync_subscription_reads_period_from_items_first() -> None:
 @pytest.mark.anyio
 async def test_sync_subscription_missing_period_raises_webhook_data_error() -> None:
     """Missing current_period_start/end raises WebhookDataError."""
+    event_repo = InMemoryStripeEventRepository()
     customer_repo = InMemoryStripeCustomerRepository()
     plan_repo = InMemoryPlanRepository()
-    event_repo = InMemoryStripeEventRepository()
 
     customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_no_period")
     await customer_repo.save(customer)
@@ -865,30 +890,87 @@ async def test_sync_subscription_missing_period_raises_webhook_data_error() -> N
             }
         },
     }
+    stripe_id = await _persist(event_repo, event)
 
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        with pytest.raises(WebhookDataError, match="missing current_period"):
-            await handle_stripe_event(b"payload", "sig", "secret", repos)
+    with pytest.raises(WebhookDataError, match="missing current_period"):
+        await process_stored_event(event, stripe_id, repos)
 
 
 @pytest.mark.anyio
-async def test_handle_stripe_event_converts_stripe_object_via_to_dict() -> None:
-    """When construct_event returns a StripeObject-like object, to_dict() is called."""
-    repos = _make_repos()
+async def test_sync_subscription_non_integer_period_raises_webhook_data_error() -> None:
+    """Non-integer current_period_* (e.g. a string from a malformed payload)
+    surfaces as WebhookDataError instead of a bare ValueError — keeps the
+    permanent/transient split in process_stored_event working."""
+    event_repo = InMemoryStripeEventRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    plan_repo = InMemoryPlanRepository()
 
-    class FakeStripeObject:
-        def to_dict(self) -> dict[str, object]:
-            return {
-                "id": "evt_stripe_obj",
-                "type": "invoice.payment_succeeded",
-                "livemode": False,
-                "data": {"object": {"id": "in_fake"}},
+    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_bad_period")
+    await customer_repo.save(customer)
+    plan = make_plan()
+    plan_repo._plans[plan.id] = plan
+    price = make_plan_price(plan_id=plan.id, stripe_price_id="price_bad_period")
+    plan_repo._prices[price.id] = price
+
+    repos = _make_repos(
+        event_repo=event_repo,
+        customer_repo=customer_repo,
+        plan_repo=plan_repo,
+    )
+    event = {
+        "id": "evt_bad_period",
+        "type": "customer.subscription.created",
+        "livemode": False,
+        "data": {
+            "object": {
+                "id": "sub_bad_period",
+                "customer": "cus_bad_period",
+                "status": "active",
+                "items": {
+                    "data": [
+                        {
+                            "id": "si_bad_period",
+                            "price": {"id": "price_bad_period"},
+                            "quantity": 1,
+                            "current_period_start": "not-a-number",
+                            "current_period_end": NOW_TS + 86400,
+                        }
+                    ]
+                },
+                "trial_end": None,
+                "canceled_at": None,
             }
+        },
+    }
+    stripe_id = await _persist(event_repo, event)
 
-    with patch("stripe.Webhook.construct_event", return_value=FakeStripeObject()):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
+    with pytest.raises(WebhookDataError, match="non-integer current_period"):
+        await process_stored_event(event, stripe_id, repos)
 
-    # Event was saved — verify it was processed successfully
-    saved = repos.events._store["evt_stripe_obj"]  # type: ignore[attr-defined]
-    assert saved.processed_at is not None
-    assert saved.error is None
+
+# ── Stripe upstream errors ──────────────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_stripe_error_from_dispatch_propagates_as_transient(monkeypatch) -> None:
+    """StripeError raised inside dispatch is caught, marked failed, and re-raised
+    so the Celery task can retry."""
+    event_repo = InMemoryStripeEventRepository()
+    repos = _make_repos(event_repo=event_repo)
+    event = {
+        "id": "evt_stripe_down",
+        "type": "invoice.payment_succeeded",
+        "livemode": False,
+        "data": {"object": {"id": "in_down"}},
+    }
+    stripe_id = await _persist(event_repo, event)
+
+    async def _flaky(*_args: object, **_kwargs: object) -> None:
+        raise stripe.StripeError("api down")
+
+    monkeypatch.setattr("saasmint_core.services.webhooks._dispatch", _flaky)
+
+    with pytest.raises(stripe.StripeError):
+        await process_stored_event(event, stripe_id, repos)
+
+    assert event_repo._store["evt_stripe_down"].error == "api down"

@@ -7,12 +7,12 @@ Django 6 SaaS backend. Python 3.12, uv, PostgreSQL (testcontainers), Celery + Re
 - `core/saasmint_core/` — framework-agnostic domain layer (domain models, services, repositories interfaces).
 - `apps/` — Django apps (`users`, `billing`, `orgs`, `dashboard`, `admin_panel`). Each has models, views, serializers, urls, tests/.
 - `config/` — Django settings (base/dev/test/prod), root urls, celery.
-- `middleware/` — custom middleware (security, etc).
+- `middleware/` — custom middleware: `security.py` (CSP / security headers) and `exceptions.py` (DRF error-envelope normalisation).
 - Django apps implement repository interfaces from core and wire them to DRF views/serializers.
 
 ## Billing model
 
-- Single-currency (USD) catalog. `PlanPrice` / `ProductPrice` store `amount` in cents, no `currency` column. Pricing endpoints accept an optional `?currency=` query param; amounts are converted for display using `ExchangeRate` (synced daily from Stripe by the `sync_exchange_rates` Celery beat task). The catalog and Stripe charges remain in USD.
+- Single-currency (USD) catalog. `PlanPrice` / `ProductPrice` store `amount` in cents, no `currency` column. Pricing endpoints accept an optional `?currency=` query param; amounts are converted for display using `ExchangeRate`. In production, rates are synced daily from Stripe by the `sync_exchange_rates` Celery beat task (runs once at deploy from `infra/entrypoint.sh`, then on schedule). In dev, `infra/entrypoint.dev.sh` instead seeds rates once via `seed_exchange_rates` (a public-API seeder that doesn't touch Stripe). The catalog and Stripe charges remain in USD.
 - `Plan` has `(context, tier, interval)` — `context` is `personal` or `team`, `tier` is an `IntegerChoices` enum (`1=free`, `2=basic`, `3=pro`). Active rows are unique on that triple.
 - `Subscription` covers two shapes:
   - Paid: `stripe_id` + `stripe_customer_id` set, lifecycle synced via webhooks.
@@ -20,8 +20,8 @@ Django 6 SaaS backend. Python 3.12, uv, PostgreSQL (testcontainers), Celery + Re
 - `current_period_end` for free subs is the sentinel `FREE_SUBSCRIPTION_PERIOD_END` (year 9999) — they never renew.
 - `Product` / `ProductPrice` are one-time purchases (credit packs / Boost), separate from subscription plans.
 - Stripe API version is pinned to `2026-03-25.dahlia`. Notable: `cancel_at_period_end=True` is replaced by `cancel_at="min_period_end"` (clear with `cancel_at=""`); `current_period_start/end` live on subscription items, not the subscription itself.
-- `manage.py seed_catalog` is the idempotent, USD-only seeder for Plans, PlanPrices, and Boost Products. It runs automatically from `infra/entrypoint.sh` after `migrate` on every deploy, using placeholder `stripe_price_id` values.
-- `make sync-stripe` (runs `manage.py sync_stripe_catalog`) is the source of truth for pushing local Plans/Products into Stripe. It should run after every `migrate` in deploy pipelines so Stripe matches the DB; it is idempotent via Stripe `lookup_key`s.
+- `manage.py seed_catalog` is the idempotent, USD-only seeder for Plans, PlanPrices, and Boost Products. It runs automatically from `infra/entrypoint.sh` after `migrate` on every deploy, using placeholder `stripe_price_id` values — followed immediately by `sync_stripe_catalog`, which replaces those placeholders with real Stripe price IDs.
+- `make sync-stripe` (runs `manage.py sync_stripe_catalog`) is the source of truth for pushing local Plans/Products into Stripe. The deploy entrypoint already runs it after `migrate` + `seed_catalog`, so Stripe matches the DB on every boot; it is idempotent via Stripe `lookup_key`s.
 
 ## Prism commands
 
@@ -64,6 +64,32 @@ After modifying any endpoint (views, serializers, URL routes), regenerate `schem
 ## Code style
 
 - Always use type hints in Python.
+
+## Bug investigation
+
+For bugs touching infra, proxy (Caddy/Nginx), OAuth, or deploy:
+- Before editing, state which layer owns the bug (frontend / backend / proxy / infra) and the specific evidence.
+- Check proxy header trust (`SECURE_PROXY_SSL_HEADER`, `USE_X_FORWARDED_HOST`) before touching app logic for URL/scheme issues.
+- Do not edit `config/settings/` for bugs whose evidence points at the frontend or proxy layer.
+
+## Project rules
+
+**Security**
+- Webhooks: verify `livemode`/env, not just signature.
+- Access checks belong in the queryset lookup, not just the serializer.
+- Token-based actions (decline, accept, unsubscribe): verify the caller owns the token's subject.
+- All password inputs go through `validate_password()`.
+
+**Settings & secrets**
+- Never set `ALLOWED_HOSTS=["*"]` when `USE_X_FORWARDED_HOST=True` — enumerate hosts.
+- Use separate env vars for secrets with different rotation lifecycles (e.g. `JWT_SIGNING_KEY` vs `SECRET_KEY`).
+- API paths default to CSP `default-src 'none'`; inline styles/scripts opt-in per path prefix.
+
+**CI/CD**
+- No `${{ github.* }}` interpolated into workflow shell — pass via `env:` and quote `"$VAR"`.
+
+**Django**
+- Don't hand-edit auto-generated migrations beyond formatting — regenerate instead.
 
 ## Accepted type: ignore / noqa suppressions
 

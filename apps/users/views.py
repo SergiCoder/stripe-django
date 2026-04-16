@@ -2,8 +2,30 @@
 
 from __future__ import annotations
 
+import io
 import uuid
 from typing import TYPE_CHECKING, ClassVar
+
+from asgiref.sync import async_to_sync
+from django.conf import settings
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
+from drf_spectacular.utils import extend_schema, inline_serializer
+from PIL import Image, ImageOps, UnidentifiedImageError
+from rest_framework import serializers, status
+from rest_framework.parsers import MultiPartParser
+from rest_framework.request import Request
+from rest_framework.response import Response
+from saasmint_core.services.gdpr import (
+    delete_account,
+    export_user_data,
+)
+
+from apps.base_views import AccountScopedView
+from apps.billing.repositories import get_billing_repos
+from apps.users.repositories import DjangoUserRepository
+from apps.users.serializers import UpdateUserSerializer, UserSerializer
+from helpers import get_user
 
 if TYPE_CHECKING:
     from apps.billing.repositories import (
@@ -11,51 +33,24 @@ if TYPE_CHECKING:
         DjangoSubscriptionRepository,
     )
 
-from asgiref.sync import async_to_sync
-from django.conf import settings
-from django.core.files.storage import default_storage
-from drf_spectacular.utils import extend_schema
-from rest_framework import serializers, status
-from rest_framework.parsers import MultiPartParser
-from rest_framework.request import Request
-from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
-from rest_framework.views import APIView
-from saasmint_core.services.gdpr import (
-    delete_account,
-    export_user_data,
-)
 
-from apps.users.repositories import DjangoUserRepository
-from apps.users.serializers import UpdateUserSerializer, UserSerializer
-from helpers import get_user
+def _get_account_repos() -> tuple[
+    DjangoUserRepository,
+    DjangoStripeCustomerRepository,
+    DjangoSubscriptionRepository,
+]:
+    """Assemble the repo tuple consumed by GDPR helpers (delete/export).
 
-_user_repo = DjangoUserRepository()
-
-
-def _billing_repos() -> tuple[DjangoStripeCustomerRepository, DjangoSubscriptionRepository]:
-    """Lazy-import and instantiate billing repositories.
-
-    Raises ``NotImplementedError`` if the billing app is not installed.
+    Exposed as a factory (mirroring ``get_billing_repos`` / ``get_webhook_repos``)
+    so tests can swap one call target rather than patching three module-level
+    singletons in every consumer module.
     """
-    try:
-        from apps.billing.repositories import (
-            DjangoStripeCustomerRepository,
-            DjangoSubscriptionRepository,
-        )
-    except ImportError:
-        raise NotImplementedError(
-            "Billing app is not installed. GDPR endpoints require apps.billing."
-        ) from None
-
-    return DjangoStripeCustomerRepository(), DjangoSubscriptionRepository()
+    billing = get_billing_repos()
+    return DjangoUserRepository(), billing.customers, billing.subscriptions
 
 
-class AccountView(APIView):
+class AccountView(AccountScopedView):
     """GET /api/v1/account — return the current user's profile."""
-
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "account"
 
     @extend_schema(responses=UserSerializer, tags=["account"])
     def get(self, request: Request) -> Response:
@@ -88,24 +83,31 @@ class AccountView(APIView):
         from asgiref.sync import sync_to_async
 
         from apps.orgs.models import OrgMember
-        from apps.orgs.services import decrement_subscription_seats, delete_orgs_created_by_user
+        from apps.orgs.services import delete_orgs_created_by_user
+        from apps.orgs.tasks import decrement_subscription_seats_task
 
-        customer_repo, subscription_repo = _billing_repos()
         user = get_user(request)
 
         async def _pre_delete(user_id: uuid.UUID) -> None:
             # If owner: delete owned orgs (cascades member account deletion)
             await sync_to_async(delete_orgs_created_by_user)(user_id)
-            # If non-owner member: remove from org + decrement seats
-            membership = await OrgMember.objects.filter(user_id=user_id).afirst()
-            if membership:
-                org_id = membership.org_id
-                await membership.adelete()
-                await sync_to_async(decrement_subscription_seats)(org_id)
+            # If non-owner member: remove from every org and decrement each
+            # seat count. `.afirst()` missed the multi-membership case.
+            memberships = OrgMember.objects.filter(user_id=user_id)
+            org_ids = [m.org_id async for m in memberships]
+            if org_ids:
+                await memberships.adelete()
+                # Fan out to Celery instead of running Stripe seat updates
+                # inline: each call is a 500-1500 ms round-trip, so K orgs
+                # would stall the DELETE request for K*~1 s. The memberships
+                # are already gone, so the task is free to run at any time.
+                for org_id in org_ids:
+                    decrement_subscription_seats_task.delay(str(org_id))
 
+        user_repo, customer_repo, subscription_repo = _get_account_repos()
         async_to_sync(delete_account)(
             user_id=user.id,
-            user_repo=_user_repo,
+            user_repo=user_repo,
             customer_repo=customer_repo,
             subscription_repo=subscription_repo,
             pre_delete_hook=_pre_delete,
@@ -113,27 +115,40 @@ class AccountView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class AccountExportView(APIView):
+class AccountExportView(AccountScopedView):
     """GET /api/v1/account/export — GDPR right of access."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "account_export"
 
-    @extend_schema(responses={200: dict}, tags=["account"])
+    @extend_schema(
+        responses={
+            200: inline_serializer(
+                "AccountExportResponse",
+                {
+                    "user": serializers.DictField(),
+                    "stripe_customer": serializers.DictField(required=False),
+                    "subscriptions": serializers.ListField(child=serializers.DictField()),
+                },
+            )
+        },
+        tags=["account"],
+    )
     def get(self, request: Request) -> Response:
-        customer_repo, subscription_repo = _billing_repos()
         user = get_user(request)
+        user_repo, customer_repo, subscription_repo = _get_account_repos()
         data = async_to_sync(export_user_data)(
             user_id=user.id,
-            user_repo=_user_repo,
+            user_repo=user_repo,
             customer_repo=customer_repo,
             subscription_repo=subscription_repo,
         )
         return Response(data)
 
 
-_MAX_AVATAR_SIZE = 5 * 1024 * 1024  # 5 MB
-_ALLOWED_AVATAR_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+_MAX_AVATAR_SIZE = 5 * 1024 * 1024  # 5 MB upload cap
+_AVATAR_DIM = 128  # final square dimension
+_AVATAR_WEBP_QUALITY = 80
+_ALLOWED_AVATAR_INPUT_FORMATS: frozenset[str] = frozenset({"JPEG", "PNG", "WEBP", "GIF"})
 
 
 def _delete_local_avatar(avatar_url: str | None) -> None:
@@ -145,49 +160,70 @@ def _delete_local_avatar(avatar_url: str | None) -> None:
 
 
 class _AvatarUploadSerializer(serializers.Serializer["_AvatarUploadSerializer"]):
-    avatar = serializers.ImageField()
+    avatar = serializers.ImageField(max_length=255)
+
+    def validate_avatar(self, value: object) -> object:
+        size = getattr(value, "size", None)
+        if size is not None and size > _MAX_AVATAR_SIZE:
+            raise serializers.ValidationError("File too large (max 5 MB).")
+        return value
 
 
-class AvatarView(APIView):
+class AvatarView(AccountScopedView):
     """POST/DELETE /api/v1/account/avatar/ — upload or delete avatar."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
-    throttle_scope = "account"
     parser_classes: ClassVar[list[type[MultiPartParser]]] = [MultiPartParser]  # type: ignore[misc]
 
     @extend_schema(
         request=_AvatarUploadSerializer,
-        responses={201: dict},
+        responses={
+            200: inline_serializer("AvatarResponse", {"avatar_url": serializers.URLField()})
+        },
         tags=["account"],
     )
     def post(self, request: Request) -> Response:
-        """Upload avatar (multipart), return { avatar_url }."""
+        """Upload avatar (multipart), return { avatar_url }.
+
+        The uploaded image is decoded with Pillow, re-encoded as a 128x128 WebP,
+        and stored. The original bytes and client-supplied filename/content_type
+        are never written to storage — this blocks stored-XSS from polyglot or
+        mis-typed uploads (e.g. ``foo.svg``/``foo.html`` claiming to be images).
+        """
         user = get_user(request)
 
-        file = request.FILES.get("avatar")
-        if file is None:
-            return Response(
-                {"detail": "No file provided.", "code": "missing_file"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        ser = _AvatarUploadSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        file = ser.validated_data["avatar"]
 
-        if file.content_type not in _ALLOWED_AVATAR_TYPES:
-            return Response(
-                {"detail": "Unsupported image type.", "code": "invalid_type"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        file.seek(0)
+        try:
+            with Image.open(file) as opened:
+                fmt = (opened.format or "").upper()
+                if fmt not in _ALLOWED_AVATAR_INPUT_FORMATS:
+                    raise serializers.ValidationError(
+                        {"avatar": ["Unsupported image type."]},
+                    )
+                img: Image.Image = ImageOps.exif_transpose(opened) or opened
+                if img.mode not in ("RGB", "RGBA"):
+                    img = img.convert("RGBA" if "A" in img.getbands() else "RGB")
+                img.thumbnail((_AVATAR_DIM, _AVATAR_DIM), Image.Resampling.LANCZOS)
 
-        if file.size is not None and file.size > _MAX_AVATAR_SIZE:
-            return Response(
-                {"detail": "File too large (max 5 MB).", "code": "file_too_large"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+                buffer = io.BytesIO()
+                img.save(
+                    buffer,
+                    format="WEBP",
+                    quality=_AVATAR_WEBP_QUALITY,
+                    method=6,
+                )
+        except (UnidentifiedImageError, OSError) as exc:
+            raise serializers.ValidationError(
+                {"avatar": ["Invalid image file."]},
+            ) from exc
 
         _delete_local_avatar(user.avatar_url)
 
-        ext = file.name.rsplit(".", 1)[-1] if "." in file.name else "jpg"
-        path = f"avatars/{user.id}/{uuid.uuid4().hex}.{ext}"
-        saved_path = default_storage.save(path, file)
+        path = f"avatars/{user.id}/{uuid.uuid4().hex}.webp"
+        saved_path = default_storage.save(path, ContentFile(buffer.getvalue()))
         avatar_url = request.build_absolute_uri(f"{settings.MEDIA_URL}{saved_path}")
 
         user.avatar_url = avatar_url
@@ -195,8 +231,7 @@ class AvatarView(APIView):
 
         return Response(
             {"avatar_url": avatar_url},
-            status=status.HTTP_201_CREATED,
-            headers={"Location": avatar_url},
+            status=status.HTTP_200_OK,
         )
 
     @extend_schema(responses={204: None}, tags=["account"])

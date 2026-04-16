@@ -18,6 +18,7 @@ class InvitationStatus(models.TextChoices):
     ACCEPTED = "accepted", "Accepted"
     EXPIRED = "expired", "Expired"
     CANCELLED = "cancelled", "Cancelled"
+    DECLINED = "declined", "Declined"
 
 
 class Org(models.Model):
@@ -32,6 +33,10 @@ class Org(models.Model):
         blank=True,
         related_name="created_orgs",
     )
+    # `deleted_at` is the canonical soft-delete marker (IS NULL = live).
+    # `is_active` is an orthogonal flag used to pause/disable an org (e.g. after
+    # the team subscription is cancelled) without deleting it, so both columns
+    # are intentional and should be filtered together: deleted_at__isnull=True, is_active=True.
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
@@ -62,6 +67,16 @@ class OrgMember(models.Model):
         db_table = "org_members"
         constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             models.UniqueConstraint(fields=["org", "user"], name="org_members_org_user_uniq"),
+        ]
+        indexes = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
+            # Hot path: `SubscriptionView` checks whether an org-member user has
+            # the billing flag on every `GET /billing/subscriptions/me/`. The
+            # unique (org, user) index doesn't help since `user` isn't the prefix.
+            models.Index(
+                fields=["user"],
+                name="idx_orgmember_billing_user",
+                condition=models.Q(is_billing=True),
+            ),
         ]
 
     def __str__(self) -> str:
@@ -95,14 +110,21 @@ class Invitation(models.Model):
 
     class Meta:
         db_table = "invitations"
-        indexes = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
-            models.Index(fields=["token"], name="idx_invitations_token"),
-        ]
         constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             models.UniqueConstraint(
                 fields=["org", "email"],
                 condition=models.Q(status="pending"),
                 name="idx_invitations_org_email_pending",
+            ),
+        ]
+        indexes = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
+            # Hot paths: listing pending invites for an org, seat-limit counts,
+            # and bulk-cancel on org delete. Partial on status='pending' so the
+            # tree stays small once invites age into accepted/expired/declined.
+            models.Index(
+                fields=["org", "-created_at"],
+                name="idx_invitation_pending_org",
+                condition=models.Q(status="pending"),
             ),
         ]
 

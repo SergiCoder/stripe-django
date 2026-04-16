@@ -29,11 +29,13 @@ class _Env(BaseSettings):
     )
 
     django_secret_key: str
+    jwt_signing_key: str = ""  # if empty, falls back to django_secret_key
     stripe_secret_key: str
     stripe_webhook_secret: str
     redis_url: str = "redis://localhost:6379/0"
     database_url: str = "postgresql://localhost:5432/saasmint"
     debug: bool = False
+    schema_public: bool = False  # expose /api/schema, /api/docs, /api/redoc outside DEBUG
     allowed_hosts: list[str] = []
     cors_allowed_origins: list[str] = []
     cors_allow_all_origins: bool = False
@@ -72,7 +74,9 @@ def _parse_db_url(url: str) -> dict[str, object]:
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 SECRET_KEY = env.django_secret_key
+JWT_SIGNING_KEY = env.jwt_signing_key or env.django_secret_key
 DEBUG = env.debug
+SCHEMA_PUBLIC = env.schema_public
 ALLOWED_HOSTS = env.allowed_hosts
 
 INSTALLED_APPS = [
@@ -133,6 +137,16 @@ DATABASES = {"default": _parse_db_url(env.database_url)}
 AUTH_USER_MODEL = "users.User"
 LOGIN_URL = "/admin/login/"
 
+AUTH_PASSWORD_VALIDATORS = [
+    {
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
+        "OPTIONS": {"min_length": 10},
+    },
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+]
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 LANGUAGE_CODE = "en-us"
@@ -163,7 +177,15 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "anon": "100/hour",
         "user": "1000/hour",
+        # `auth` is the shared bucket for verify-email, reset, change-password,
+        # OAuth start/callback, and invitation accept/decline — all low-volume
+        # but bursty flows. Login, refresh, and register are split into their
+        # own scopes so SPA reconnect bursts on refresh do not starve login
+        # attempts, and vice versa.
         "auth": "10/minute",
+        "auth_login": "5/minute",
+        "auth_register": "5/minute",
+        "auth_refresh": "60/minute",
         "billing": "100/hour",
         "account": "120/hour",
         "account_export": "3/hour",
@@ -196,6 +218,16 @@ CORS_ALLOWED_ORIGINS = env.cors_allowed_origins
 CORS_ALLOW_ALL_ORIGINS = env.cors_allow_all_origins
 CSRF_TRUSTED_ORIGINS = env.csrf_trusted_origins
 
+# Cache — shared Redis across all workers. LocMemCache would shard per
+# process and break OAuth one-time-code exchange, per-user auth-cache
+# invalidation, and exchange-rate fan-out under multi-worker load.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": env.redis_url,
+    },
+}
+
 # Celery
 CELERY_BROKER_URL = env.redis_url
 CELERY_RESULT_BACKEND = env.redis_url
@@ -210,6 +242,10 @@ CELERY_BEAT_SCHEDULE = {
     },
     "cleanup-orphaned-org-accounts": {
         "task": "apps.users.tasks.cleanup_orphaned_org_accounts",
+        "schedule": 86400,  # once per day
+    },
+    "cleanup-expired-refresh-tokens": {
+        "task": "apps.users.tasks.cleanup_expired_refresh_tokens",
         "schedule": 86400,  # once per day
     },
 }
