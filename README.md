@@ -12,7 +12,7 @@ A production-ready Django backend for building SaaS applications with Stripe bil
 - **Organizations** — multi-tenant orgs with role-based membership (owner, admin, member), email invitations, and ownership transfer
 - **Multi-plan support** — personal and team plans (free, basic, pro) with seat-based team pricing, or define your own
 - **One-time products** — credit packs (Boost) for non-subscription purchases via Stripe Checkout
-- **Multi-currency display** — USD-only catalog with daily Stripe-sourced exchange rates for display-time conversion to 25+ currencies
+- **Multi-currency display** — USD-only catalog with daily Stripe-sourced exchange rates for display-time conversion to 20+ currencies
 - **Dev seed data** — one command to populate the database with realistic test users, orgs, and subscriptions
 - **CI/CD** — GitHub Actions for lint, typecheck, and tests out of the box
 
@@ -83,6 +83,8 @@ Links to Swagger and ReDoc also appear in the Django admin header (debug only).
 |---|---|
 | `ENVIRONMENT` | Environment name (`local`, `development`, `production`) — selects which env file to load |
 | `DJANGO_SECRET_KEY` | Django secret key |
+| `JWT_SIGNING_KEY` | Signing key for access/refresh JWTs. Keep separate from `DJANGO_SECRET_KEY` so it can be rotated independently; falls back to `DJANGO_SECRET_KEY` if unset |
+| `SCHEMA_PUBLIC` | Set to `True` to expose `/api/schema/`, `/api/docs/`, `/api/redoc/` outside `DEBUG`. Always on when `DEBUG=True` |
 | `DATABASE_URL` | PostgreSQL connection string |
 | `STRIPE_SECRET_KEY` | Stripe API secret key |
 | `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret |
@@ -122,7 +124,7 @@ saasmint-core/
 │   ├── dashboard/       # Server-rendered dashboard, hijack impersonation landing views
 │   ├── orgs/            # Organization management and membership
 │   └── users/           # User auth, Django JWT authentication, and profile management
-├── middleware/           # Django middleware (exception handling, security headers)
+├── middleware/           # Django middleware — security.py (CSP / security headers), exceptions.py (DRF error-envelope normalisation)
 ├── infra/               # Docker, Caddy TLS proxy, and dev entrypoint
 ├── templates/           # Shared HTML templates (admin overrides, DRF browsable API, topbar)
 ├── scripts/             # CI helper scripts (dependency parser)
@@ -169,12 +171,11 @@ make seed
 
 ## Stripe setup
 
-1. Create a [Stripe account](https://dashboard.stripe.com/register)
-2. Get your API keys from the [Stripe Dashboard](https://dashboard.stripe.com/apikeys) and put them in `.env.local`
-3. Seed the local catalog — `python manage.py seed_catalog` creates the default Plans, PlanPrices, and Boost Products with placeholder `stripe_price_id` values. It is idempotent and runs automatically from `infra/entrypoint.sh` after `migrate` on every deploy. To customize the catalog, edit `apps/billing/management/commands/seed_catalog.py`.
-4. Push the local catalog to Stripe with `make sync-stripe` — this creates Stripe Products/Prices via `python manage.py sync_stripe_catalog` and writes the resulting `stripe_price_id` back onto `PlanPrice` / `ProductPrice`, replacing the placeholders from step 3. The command is idempotent (uses Stripe `lookup_key`s) and should also be run after every deploy.
-5. Webhook forwarding for local development is handled automatically by the bundled `stripe-cli` service in `docker-compose.yml`. Run `stripe login` once on the host (its config is mounted into the container), then `make dev` will start the forwarder alongside Django. Tail it with `make stripe-logs`.
-6. In production, set up a webhook endpoint pointing to `/api/v1/webhooks/stripe/` with these events:
+1. Create a [Stripe account](https://dashboard.stripe.com/register).
+2. Get your API keys from the [Stripe Dashboard](https://dashboard.stripe.com/apikeys) and put them in the env file for your target environment — `.env.local` (default), `.env.dev`, or `.env.prod`. The active file is selected by `ENVIRONMENT` (`local` | `development` | `production`).
+3. Start the stack — `infra/entrypoint.sh` runs `migrate`, then `seed_catalog` (idempotent; creates default Plans, PlanPrices, and Boost Products with placeholder `stripe_price_id` values), then `sync_stripe_catalog` (idempotent via Stripe `lookup_key`s; creates/updates Stripe Products/Prices and writes real `stripe_price_id`s back onto the DB rows). No manual steps are needed after deploy. To customize the catalog, edit `apps/billing/management/commands/seed_catalog.py`; to push changes manually, run `make sync-stripe`.
+4. Webhook forwarding for local development is handled automatically by the bundled `stripe-cli` service in `docker-compose.yml`. Mount your host `~/.config/stripe` read-write into the container (the CLI writes auth state back to its config) and run `stripe login` once on the host — then `make dev` starts the forwarder alongside Django. Tail it with `make stripe-logs`.
+5. In production, set up a webhook endpoint pointing to `/api/v1/webhooks/stripe/` with these events:
    - `checkout.session.completed`
    - `customer.subscription.created`
    - `customer.subscription.updated`
