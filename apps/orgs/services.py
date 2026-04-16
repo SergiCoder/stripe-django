@@ -26,6 +26,14 @@ def generate_unique_slug(name: str) -> str:
 
     Slugifies the name, ensures it matches [a-z0-9][a-z0-9-]*[a-z0-9] (min 2 chars),
     and appends a numeric suffix if the slug is already taken by an active org.
+
+    Race semantics: this is a best-effort generator, not a guarantee. The
+    scan + pick is not transactional, so two concurrent callers can land on
+    the same candidate. The partial unique index on `Org.slug` where
+    `deleted_at IS NULL` (see `idx_orgs_slug_active`) is the authoritative
+    uniqueness enforcer — callers are expected to wrap the `Org.create()`
+    in a try/except for `IntegrityError` and retry if they must survive a
+    lost race (see `_create_org_with_owner`).
     """
     base = slugify(name)
     # Strip any characters not in [a-z0-9-]

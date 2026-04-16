@@ -7,12 +7,12 @@ Django 6 SaaS backend. Python 3.12, uv, PostgreSQL (testcontainers), Celery + Re
 - `core/saasmint_core/` — framework-agnostic domain layer (domain models, services, repositories interfaces).
 - `apps/` — Django apps (`users`, `billing`, `orgs`, `dashboard`, `admin_panel`). Each has models, views, serializers, urls, tests/.
 - `config/` — Django settings (base/dev/test/prod), root urls, celery.
-- `middleware/` — custom middleware (security, etc).
+- `middleware/` — custom middleware: `security.py` (CSP / security headers) and `exceptions.py` (DRF error-envelope normalisation).
 - Django apps implement repository interfaces from core and wire them to DRF views/serializers.
 
 ## Billing model
 
-- Single-currency (USD) catalog. `PlanPrice` / `ProductPrice` store `amount` in cents, no `currency` column. Pricing endpoints accept an optional `?currency=` query param; amounts are converted for display using `ExchangeRate` (synced daily from Stripe by the `sync_exchange_rates` Celery beat task). The catalog and Stripe charges remain in USD.
+- Single-currency (USD) catalog. `PlanPrice` / `ProductPrice` store `amount` in cents, no `currency` column. Pricing endpoints accept an optional `?currency=` query param; amounts are converted for display using `ExchangeRate`. In production, rates are synced daily from Stripe by the `sync_exchange_rates` Celery beat task (runs once at deploy from `infra/entrypoint.sh`, then on schedule). In dev, `infra/entrypoint.dev.sh` instead seeds rates once via `seed_exchange_rates` (a public-API seeder that doesn't touch Stripe). The catalog and Stripe charges remain in USD.
 - `Plan` has `(context, tier, interval)` — `context` is `personal` or `team`, `tier` is an `IntegerChoices` enum (`1=free`, `2=basic`, `3=pro`). Active rows are unique on that triple.
 - `Subscription` covers two shapes:
   - Paid: `stripe_id` + `stripe_customer_id` set, lifecycle synced via webhooks.

@@ -77,6 +77,8 @@ if [ ! -f "$SAASMINT_DIR/.env.dev" ]; then
 ENVIRONMENT=dev
 DJANGO_SETTINGS_MODULE=config.settings.dev
 DJANGO_SECRET_KEY=CHANGE_ME_generate_with_python_c_import_secrets_secrets_token_urlsafe_64
+JWT_SIGNING_KEY=CHANGE_ME_separate_rotation_from_django_secret_key_token_urlsafe_64
+SCHEMA_PUBLIC=false
 DEBUG=true
 DJANGO_PORT=8001
 DJANGO_STATIC_ROOT=/app/staticfiles
@@ -98,6 +100,14 @@ STRIPE_WEBHOOK_SECRET=whsec_CHANGE_ME
 RESEND_API_KEY=re_CHANGE_ME
 EMAIL_FROM_ADDRESS=noreply@saasmint.net
 FRONTEND_URL=https://app.saasmint.net
+
+# OAuth providers (optional — leave blank to disable a provider)
+OAUTH_GOOGLE_CLIENT_ID=
+OAUTH_GOOGLE_CLIENT_SECRET=
+OAUTH_GITHUB_CLIENT_ID=
+OAUTH_GITHUB_CLIENT_SECRET=
+OAUTH_MICROSOFT_CLIENT_ID=
+OAUTH_MICROSOFT_CLIENT_SECRET=
 
 # SaasMint App (frontend)
 NEXT_PUBLIC_API_URL=https://api.saasmint.net
