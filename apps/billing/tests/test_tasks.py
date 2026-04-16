@@ -2,25 +2,38 @@
 
 from __future__ import annotations
 
-import json
+import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from stripe import StripeError
 
+from apps.billing.models import StripeEvent
 from apps.billing.tasks import process_stripe_webhook, sync_exchange_rates
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
-_VALID_PAYLOAD = json.dumps({"id": "evt_test_001", "type": "customer.subscription.updated"})
-_VALID_SIG = "t=1234,v1=abc"
+def _seed_event(
+    *,
+    stripe_id: str = "evt_test_001",
+    event_type: str = "customer.subscription.updated",
+    livemode: bool = False,
+) -> StripeEvent:
+    return StripeEvent.objects.create(
+        stripe_id=stripe_id,
+        type=event_type,
+        livemode=livemode,
+        payload={
+            "id": stripe_id,
+            "type": event_type,
+            "livemode": livemode,
+            "data": {"object": {"id": "obj_123"}},
+        },
+    )
 
 
-def _run_task(payload: str = _VALID_PAYLOAD, signature: str = _VALID_SIG) -> None:
+def _run_task(event_id: str) -> None:
     """Apply the task synchronously (bypasses Celery worker)."""
-    process_stripe_webhook.apply(args=[payload, signature]).get()
+    process_stripe_webhook.apply(args=[event_id]).get()
 
 
 # ---------------------------------------------------------------------------
@@ -30,133 +43,109 @@ def _run_task(payload: str = _VALID_PAYLOAD, signature: str = _VALID_SIG) -> Non
 
 @pytest.mark.django_db
 class TestProcessStripeWebhookSuccess:
-    def test_calls_handle_stripe_event_with_correct_args(self):
+    def test_loads_event_and_dispatches_with_persisted_payload(self):
+        event = _seed_event()
         mock_handle = AsyncMock()
         with (
             patch(
-                "saasmint_core.services.webhooks.handle_stripe_event",
+                "saasmint_core.services.webhooks.process_stored_event",
                 mock_handle,
             ),
             patch("apps.billing.tasks.get_webhook_repos", return_value=MagicMock()),
-            patch("apps.billing.tasks.settings") as mock_settings,
         ):
-            mock_settings.STRIPE_WEBHOOK_SECRET = "whsec_test"
-            _run_task()
+            _run_task(str(event.id))
 
         mock_handle.assert_awaited_once()
         call_kwargs = mock_handle.call_args.kwargs
-        assert call_kwargs["payload"] == _VALID_PAYLOAD.encode("utf-8")
-        assert call_kwargs["signature"] == _VALID_SIG
-        assert call_kwargs["webhook_secret"] == "whsec_test"
+        assert call_kwargs["event"] == event.payload
+        assert call_kwargs["stripe_id"] == event.stripe_id
 
-    def test_completes_without_error_on_success(self):
-        mock_handle = AsyncMock()
-        with (
-            patch("saasmint_core.services.webhooks.handle_stripe_event", mock_handle),
-            patch("apps.billing.tasks.get_webhook_repos", return_value=MagicMock()),
-            patch("apps.billing.tasks.settings") as mock_settings,
-        ):
-            mock_settings.STRIPE_WEBHOOK_SECRET = "whsec_test"
-            # Should not raise
-            _run_task()
+    def test_raises_if_event_id_unknown(self):
+        """A bogus id indicates a lost DB row or dev-env mismatch — fail loud."""
+        with pytest.raises(StripeEvent.DoesNotExist):
+            _run_task(str(uuid.uuid4()))
 
 
 # ---------------------------------------------------------------------------
-# WebhookVerificationError — no retry
+# Permanent errors — no retry
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-class TestProcessStripeWebhookVerificationError:
-    def test_raises_without_retrying_on_verification_failure(self):
-        from saasmint_core.exceptions import WebhookVerificationError
+class TestProcessStripeWebhookPermanentError:
+    def test_webhook_data_error_raised_without_retry(self):
+        """WebhookDataError surfaces as-is; the task does NOT call self.retry."""
+        from saasmint_core.exceptions import WebhookDataError
 
-        mock_handle = AsyncMock(side_effect=WebhookVerificationError("bad sig"))
+        event = _seed_event()
+        mock_handle = AsyncMock(side_effect=WebhookDataError("Unknown customer"))
         with (
-            patch("saasmint_core.services.webhooks.handle_stripe_event", mock_handle),
+            patch("saasmint_core.services.webhooks.process_stored_event", mock_handle),
             patch("apps.billing.tasks.get_webhook_repos", return_value=MagicMock()),
-            patch("apps.billing.tasks.settings") as mock_settings,
         ):
-            mock_settings.STRIPE_WEBHOOK_SECRET = "whsec_test"
-            with pytest.raises(WebhookVerificationError):
-                _run_task()
+            with pytest.raises(WebhookDataError):
+                _run_task(str(event.id))
 
-        # Task must not have scheduled a retry — handle was called exactly once
         mock_handle.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
-# Retryable errors
+# Transient errors — retry
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
 class TestProcessStripeWebhookRetry:
     def test_retries_on_stripe_error(self):
-        exc = StripeError("network failure")
-        mock_handle = AsyncMock(side_effect=exc)
+        event = _seed_event()
+        mock_handle = AsyncMock(side_effect=StripeError("network failure"))
         with (
-            patch("saasmint_core.services.webhooks.handle_stripe_event", mock_handle),
+            patch("saasmint_core.services.webhooks.process_stored_event", mock_handle),
             patch("apps.billing.tasks.get_webhook_repos", return_value=MagicMock()),
-            patch("apps.billing.tasks.settings") as mock_settings,
         ):
-            mock_settings.STRIPE_WEBHOOK_SECRET = "whsec_test"
             with pytest.raises(StripeError):
-                _run_task()
+                _run_task(str(event.id))
 
-        # Called once before the task gives up on the first attempt
         assert mock_handle.await_count >= 1
 
     def test_retries_on_connection_error(self):
-        exc = ConnectionError("timeout")
-        mock_handle = AsyncMock(side_effect=exc)
+        event = _seed_event()
+        mock_handle = AsyncMock(side_effect=ConnectionError("timeout"))
         with (
-            patch("saasmint_core.services.webhooks.handle_stripe_event", mock_handle),
+            patch("saasmint_core.services.webhooks.process_stored_event", mock_handle),
             patch("apps.billing.tasks.get_webhook_repos", return_value=MagicMock()),
-            patch("apps.billing.tasks.settings") as mock_settings,
         ):
-            mock_settings.STRIPE_WEBHOOK_SECRET = "whsec_test"
             with pytest.raises(ConnectionError):
-                _run_task()
+                _run_task(str(event.id))
 
         assert mock_handle.await_count >= 1
 
     def test_retries_on_operational_error(self):
         from django.db.utils import OperationalError
 
-        exc = OperationalError("db connection lost")
-        mock_handle = AsyncMock(side_effect=exc)
+        event = _seed_event()
+        mock_handle = AsyncMock(side_effect=OperationalError("db connection lost"))
         with (
-            patch("saasmint_core.services.webhooks.handle_stripe_event", mock_handle),
+            patch("saasmint_core.services.webhooks.process_stored_event", mock_handle),
             patch("apps.billing.tasks.get_webhook_repos", return_value=MagicMock()),
-            patch("apps.billing.tasks.settings") as mock_settings,
         ):
-            mock_settings.STRIPE_WEBHOOK_SECRET = "whsec_test"
             with pytest.raises(OperationalError):
-                _run_task()
+                _run_task(str(event.id))
 
         assert mock_handle.await_count >= 1
 
-
-# ---------------------------------------------------------------------------
-# Malformed JSON payload — graceful handling
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.django_db
-class TestProcessStripeWebhookMalformedPayload:
-    def test_handles_non_json_payload_without_raising_before_event_call(self):
-        """Malformed JSON should not crash the task before it calls handle_stripe_event."""
+    def test_retry_after_webhook_secret_rotation_succeeds(self):
+        """The task loads the already-verified payload from DB and never
+        re-verifies the Stripe signature, so a retry after the webhook secret
+        was rotated mid-queue still dispatches successfully."""
+        event = _seed_event(stripe_id="evt_post_rotation")
         mock_handle = AsyncMock()
         with (
-            patch("saasmint_core.services.webhooks.handle_stripe_event", mock_handle),
+            patch("saasmint_core.services.webhooks.process_stored_event", mock_handle),
             patch("apps.billing.tasks.get_webhook_repos", return_value=MagicMock()),
-            patch("apps.billing.tasks.settings") as mock_settings,
         ):
-            mock_settings.STRIPE_WEBHOOK_SECRET = "whsec_test"
-            _run_task(payload="not-valid-json", signature=_VALID_SIG)
+            _run_task(str(event.id))
 
-        # handle_stripe_event still called — task did not abort early
         mock_handle.assert_awaited_once()
 
 
@@ -211,7 +200,6 @@ class TestSyncExchangeRates:
         """Currencies in SUPPORTED_CURRENCIES but absent from Stripe rates are skipped."""
         from apps.billing.models import ExchangeRate
 
-        # Only return eur — all other supported currencies should be skipped
         mock_obj = MagicMock()
         mock_obj.rates = {"eur": 0.91}
 
