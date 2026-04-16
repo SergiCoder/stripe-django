@@ -539,3 +539,189 @@ class TestOAuthAuthorizeView:
         resp = api.get("/api/v1/auth/oauth/microsoft/")
         assert resp.status_code == 302
         assert "login.microsoftonline.com" in resp["Location"]
+
+
+# ---------------------------------------------------------------------------
+# Token security — reuse / tampering / concurrent attempts
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestVerifyEmailTokenSecurity:
+    URL = "/api/v1/auth/verify-email/"
+
+    def test_token_cannot_be_replayed(self, api):
+        user = User.objects.create_user(
+            email="replay-verify@example.com", full_name="Replay", is_verified=False
+        )
+        token = create_email_verification_token(user)
+
+        first = api.post(self.URL, {"token": token}, format="json")
+        assert first.status_code == 200
+
+        # Replay — token.used_at is now set, must fail.
+        second = api.post(self.URL, {"token": token}, format="json")
+        assert second.status_code == 401
+        assert second.data["code"] == "token_used"
+
+    def test_token_with_modified_character_rejected(self, api):
+        user = User.objects.create_user(
+            email="tamper-verify@example.com", full_name="Tamper", is_verified=False
+        )
+        token = create_email_verification_token(user)
+        # Flip last char — URL-safe tokens contain a-zA-Z0-9-_
+        tampered = token[:-1] + ("A" if token[-1] != "A" else "B")
+
+        resp = api.post(self.URL, {"token": tampered}, format="json")
+        assert resp.status_code == 401
+        assert resp.data["code"] == "invalid_token"
+        # Original user is not verified and token remains unused.
+        user.refresh_from_db()
+        assert user.is_verified is False
+
+    def test_expired_token_rejected(self, api):
+        from apps.users.models import EmailVerificationToken
+
+        user = User.objects.create_user(
+            email="expired-verify@example.com", full_name="Expired", is_verified=False
+        )
+        token = create_email_verification_token(user)
+        rec = EmailVerificationToken.objects.get(token_hash=_hash_token(token))
+        rec.expires_at = datetime.now(UTC) - timedelta(minutes=1)
+        rec.save(update_fields=["expires_at"])
+
+        resp = api.post(self.URL, {"token": token}, format="json")
+        assert resp.status_code == 401
+        assert resp.data["code"] == "token_expired"
+
+    def test_only_one_of_two_identical_attempts_consumes_token(self, api):
+        """Back-to-back submissions: the first wins, the second sees token_used.
+
+        Can't simulate true concurrency without threads, but this documents
+        that the token is atomically single-use within the request lifecycle.
+        """
+        user = User.objects.create_user(
+            email="concurrent-verify@example.com",
+            full_name="Concurrent",
+            is_verified=False,
+        )
+        token = create_email_verification_token(user)
+
+        r1 = api.post(self.URL, {"token": token}, format="json")
+        r2 = api.post(self.URL, {"token": token}, format="json")
+
+        assert {r1.status_code, r2.status_code} == {200, 401}
+        if r1.status_code == 401:
+            assert r1.data["code"] == "token_used"
+        else:
+            assert r2.data["code"] == "token_used"
+
+
+@pytest.mark.django_db
+class TestResetPasswordTokenSecurity:
+    URL = "/api/v1/auth/reset-password/"
+
+    def test_token_cannot_be_replayed(self, api, verified_user):
+        token = create_password_reset_token(verified_user)
+
+        first = api.post(
+            self.URL, {"token": token, "password": "newpassword1"}, format="json"
+        )
+        assert first.status_code == 200
+
+        second = api.post(
+            self.URL, {"token": token, "password": "anotherpass2"}, format="json"
+        )
+        assert second.status_code == 401
+        assert second.data["code"] == "token_used"
+        # Password not changed to the second attempt's value.
+        verified_user.refresh_from_db()
+        assert verified_user.check_password("newpassword1")
+
+    def test_token_with_modified_character_rejected(self, api, verified_user):
+        token = create_password_reset_token(verified_user)
+        tampered = token[:-1] + ("A" if token[-1] != "A" else "B")
+
+        resp = api.post(
+            self.URL, {"token": tampered, "password": "newpassword1"}, format="json"
+        )
+        assert resp.status_code == 401
+        assert resp.data["code"] == "invalid_token"
+        verified_user.refresh_from_db()
+        assert verified_user.check_password("testpass123")
+
+    def test_expired_token_rejected(self, api, verified_user):
+        from apps.users.models import PasswordResetToken
+
+        token = create_password_reset_token(verified_user)
+        rec = PasswordResetToken.objects.get(token_hash=_hash_token(token))
+        rec.expires_at = datetime.now(UTC) - timedelta(minutes=1)
+        rec.save(update_fields=["expires_at"])
+
+        resp = api.post(
+            self.URL, {"token": token, "password": "newpassword1"}, format="json"
+        )
+        assert resp.status_code == 401
+        assert resp.data["code"] == "token_expired"
+
+    def test_only_one_of_two_identical_attempts_consumes_token(self, api, verified_user):
+        token = create_password_reset_token(verified_user)
+        r1 = api.post(self.URL, {"token": token, "password": "newpassword1"}, format="json")
+        r2 = api.post(self.URL, {"token": token, "password": "anotherpass2"}, format="json")
+        assert {r1.status_code, r2.status_code} == {200, 401}
+
+
+@pytest.mark.django_db
+class TestRefreshTokenSecurity:
+    URL = "/api/v1/auth/refresh/"
+
+    def test_reuse_of_rotated_token_revokes_all_user_tokens(self, api, verified_user):
+        """Reusing an already-rotated (therefore revoked) refresh token
+        triggers defensive revocation of every other token for the user.
+        """
+        raw = create_refresh_token(verified_user)
+        other = create_refresh_token(verified_user)
+
+        first = api.post(self.URL, {"refresh_token": raw}, format="json")
+        assert first.status_code == 200
+
+        # Replay of the original raw token.
+        second = api.post(self.URL, {"refresh_token": raw}, format="json")
+        assert second.status_code == 401
+        assert second.data["code"] == "token_revoked"
+
+        # Any other pre-existing token for this user must now be revoked.
+        other_rt = RefreshToken.objects.get(token_hash=_hash_token(other))
+        assert other_rt.revoked_at is not None
+
+        # And the freshly-rotated token is also revoked as collateral damage.
+        new_raw = first.data["refresh_token"]
+        new_rt = RefreshToken.objects.get(token_hash=_hash_token(new_raw))
+        assert new_rt.revoked_at is not None
+
+    def test_tampered_refresh_token_rejected(self, api, verified_user):
+        raw = create_refresh_token(verified_user)
+        tampered = raw[:-1] + ("A" if raw[-1] != "A" else "B")
+
+        resp = api.post(self.URL, {"refresh_token": tampered}, format="json")
+        assert resp.status_code == 401
+        assert resp.data["code"] == "invalid_token"
+        # Original token is still valid.
+        good = api.post(self.URL, {"refresh_token": raw}, format="json")
+        assert good.status_code == 200
+
+    def test_refresh_token_from_inactive_user_rejected(self, api, verified_user):
+        raw = create_refresh_token(verified_user)
+        verified_user.is_active = False
+        verified_user.save(update_fields=["is_active"])
+
+        resp = api.post(self.URL, {"refresh_token": raw}, format="json")
+        assert resp.status_code == 401
+        assert resp.data["code"] == "user_not_found"
+
+    def test_only_one_of_two_identical_rotations_succeeds(self, api, verified_user):
+        """Rotating the same token twice: first succeeds, second sees revoked."""
+        raw = create_refresh_token(verified_user)
+        r1 = api.post(self.URL, {"refresh_token": raw}, format="json")
+        r2 = api.post(self.URL, {"refresh_token": raw}, format="json")
+        assert {r1.status_code, r2.status_code} == {200, 401}
