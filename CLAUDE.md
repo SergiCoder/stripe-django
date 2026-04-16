@@ -65,6 +65,13 @@ After modifying any endpoint (views, serializers, URL routes), regenerate `schem
 
 - Always use type hints in Python.
 
+## Bug investigation
+
+For bugs touching infra, proxy (Caddy/Nginx), OAuth, or deploy:
+- Before editing, state which layer owns the bug (frontend / backend / proxy / infra) and the specific evidence.
+- Check proxy header trust (`SECURE_PROXY_SSL_HEADER`, `USE_X_FORWARDED_HOST`) before touching app logic for URL/scheme issues.
+- Do not edit `config/settings/` for bugs whose evidence points at the frontend or proxy layer.
+
 ## Project rules
 
 **Security**
