@@ -441,8 +441,11 @@ class TestSubscriptionView:
 
 @pytest.mark.django_db
 class TestCancelSubscription:
+    @patch("apps.billing.views.send_subscription_cancel_notice_task")
     @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
-    def test_cancels_subscription(self, mock_cancel, authed_client, subscription):
+    def test_cancels_subscription(
+        self, mock_cancel, _mock_task, authed_client, subscription
+    ):
         resp = authed_client.delete("/api/v1/billing/subscriptions/me/")
         # Cancellation takes effect at period end, so the response is 202 Accepted
         # with the still-active subscription echoed back.
@@ -628,8 +631,11 @@ class TestUpdateSubscription:
         )
         assert mock_change.call_args.kwargs["prorate"] is False
 
+    @patch("apps.billing.views.send_subscription_cancel_notice_task")
     @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
-    def test_cancel_at_period_end_true_calls_cancel(self, mock_cancel, authed_client, subscription):
+    def test_cancel_at_period_end_true_calls_cancel(
+        self, mock_cancel, _mock_task, authed_client, subscription
+    ):
         resp = authed_client.patch(
             "/api/v1/billing/subscriptions/me/",
             {"cancel_at_period_end": True},
@@ -639,9 +645,10 @@ class TestUpdateSubscription:
         mock_cancel.assert_called_once()
         assert mock_cancel.call_args.kwargs["at_period_end"] is True
 
+    @patch("apps.billing.views.send_subscription_cancel_notice_task")
     @patch("apps.billing.views.resume_subscription", new_callable=AsyncMock)
     def test_cancel_at_period_end_false_calls_resume(
-        self, mock_resume, authed_client, subscription
+        self, mock_resume, _mock_task, authed_client, subscription
     ):
         resp = authed_client.patch(
             "/api/v1/billing/subscriptions/me/",
@@ -651,10 +658,11 @@ class TestUpdateSubscription:
         assert resp.status_code == 200
         mock_resume.assert_called_once()
 
+    @patch("apps.billing.views.send_subscription_cancel_notice_task")
     @patch("apps.billing.views.resume_subscription", new_callable=AsyncMock)
     @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
     def test_cancel_toggle_does_not_call_change_plan(
-        self, mock_cancel, mock_resume, authed_client, subscription
+        self, mock_cancel, mock_resume, _mock_task, authed_client, subscription
     ):
         with patch("apps.billing.views.change_plan", new_callable=AsyncMock) as mock_change:
             authed_client.patch(
@@ -1028,8 +1036,11 @@ class TestTeamSubscriptionResolution:
 
 @pytest.mark.django_db
 class TestBillingAuthorityOnMutations:
+    @patch("apps.billing.views.send_subscription_cancel_notice_task")
     @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
-    def test_billing_member_can_delete(self, mock_cancel, org_member_client, team_org_setup):
+    def test_billing_member_can_delete(
+        self, mock_cancel, _mock_task, org_member_client, team_org_setup
+    ):
         resp = org_member_client.delete("/api/v1/billing/subscriptions/me/")
         assert resp.status_code == 202
         mock_cancel.assert_called_once()
