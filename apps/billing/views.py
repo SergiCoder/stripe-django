@@ -46,6 +46,7 @@ from apps.billing.serializers import (
     UpdateSubscriptionSerializer,
 )
 from apps.billing.services import plan_context_for
+from apps.billing.tasks import send_subscription_cancel_notice_task
 from apps.users.models import AccountType, User
 from helpers import get_user
 
@@ -66,6 +67,7 @@ class _AccountTypeMismatch(APIException):
     status_code = status.HTTP_409_CONFLICT
     default_detail = "Account type does not match the plan's context."
     default_code = "account_type_mismatch"
+
 
 _CURRENCY_PARAM = OpenApiParameter(
     name="currency",
@@ -144,18 +146,50 @@ def _validate_quantity_for_plan(plan_price: PlanPrice, quantity: int) -> int:
     return _validate_quantity_for_context(PlanContext(plan_price.plan.context), quantity)
 
 
+async def _resolve_billing_customer_id(user: User) -> UUID | None:
+    """Return the StripeCustomer id that owns billing for *user*, or None.
+
+    PERSONAL users own their own customer; ORG_MEMBER users get the customer
+    attached to the active org they belong to (the billing authority is
+    enforced separately by :func:`_require_billing_authority`).
+    """
+    repos = get_billing_repos()
+    if user.account_type == AccountType.ORG_MEMBER:
+        from apps.orgs.models import OrgMember
+
+        membership = (
+            await OrgMember.objects.filter(
+                user_id=user.id,
+                org__is_active=True,
+                org__deleted_at__isnull=True,
+            )
+            .only("org_id")
+            .afirst()
+        )
+        if membership is None:
+            return None
+        customer = await repos.customers.get_by_org_id(membership.org_id)
+    else:
+        customer = await repos.customers.get_by_user_id(user.id)
+    return customer.id if customer is not None else None
+
+
 async def _get_customer_and_paid_subscription(
-    user_id: UUID,
+    user: User,
 ) -> tuple[StripeCustomer, Subscription, str]:
     """Fetch the Stripe customer, active *paid* subscription, and its stripe_id.
 
-    Free-plan (local) subscriptions are excluded because PATCH/DELETE
-    operations require a real Stripe subscription. Returning ``stripe_sub_id``
-    as a non-optional ``str`` lets callers avoid re-checking for ``None``.
-    Raises NotFound when the customer or paid sub is missing.
+    Resolves via the user for PERSONAL, via the user's active org membership
+    for ORG_MEMBER. Free-plan (local) subscriptions are excluded because
+    PATCH/DELETE operations require a real Stripe subscription. Returning
+    ``stripe_sub_id`` as a non-optional ``str`` lets callers avoid re-checking
+    for ``None``. Raises NotFound when the customer or paid sub is missing.
     """
     repos = get_billing_repos()
-    customer = await repos.customers.get_by_user_id(user_id)
+    customer_id = await _resolve_billing_customer_id(user)
+    if customer_id is None:
+        raise NotFound("No Stripe customer found.")
+    customer = await repos.customers.get_by_id(customer_id)
     if customer is None:
         raise NotFound("No Stripe customer found.")
     sub = await repos.subscriptions.get_active_for_customer(customer.id)
@@ -349,22 +383,41 @@ class PortalSessionView(BillingScopedView):
 
 
 def _get_active_subscription_for_user(user: User) -> SubscriptionModel:
-    """Fetch the latest active subscription for a user (paid or free)."""
-    # Org members may only reach an org subscription via their is_billing flag.
-    # Non-billing members must not see the org's subscription details.
+    """Fetch the latest active subscription for a user (paid or free).
+
+    PERSONAL users resolve to their own subscription (paid or free fallback).
+    ORG_MEMBER users resolve to the active subscription of the org they belong
+    to — any member of an active org can see it; the is_billing gate applies
+    to mutations, not reads.
+    """
+    base = SubscriptionModel.objects.select_related("plan__price").filter(
+        status__in=ACTIVE_SUBSCRIPTION_STATUSES
+    )
+
     if user.account_type == AccountType.ORG_MEMBER:
         from apps.orgs.models import OrgMember
 
-        if not OrgMember.objects.filter(user_id=user.id, is_billing=True).exists():
+        membership = (
+            OrgMember.objects.filter(
+                user_id=user.id,
+                org__is_active=True,
+                org__deleted_at__isnull=True,
+            )
+            .only("org_id")
+            .first()
+        )
+        if membership is None:
             raise NotFound("No active subscription found.")
+        sub = base.filter(stripe_customer__org_id=membership.org_id).order_by("-created_at").first()
+        if sub is None:
+            raise NotFound("No active subscription found.")
+        return sub
+
     customer = getattr(user, "stripe_customer", None)
     customer_id = customer.id if customer is not None else None
     # Split into two queries instead of ORing `user` with `stripe_customer_id`
     # so each query can use its own partial index (idx_sub_user_status /
     # idx_sub_customer_status) instead of degenerating into a scan.
-    base = SubscriptionModel.objects.select_related("plan__price").filter(
-        status__in=ACTIVE_SUBSCRIPTION_STATUSES
-    )
     sub_user = base.filter(user_id=user.id).order_by("-created_at").first()
     sub_customer = (
         base.filter(stripe_customer_id=customer_id).order_by("-created_at").first()
@@ -375,6 +428,57 @@ def _get_active_subscription_for_user(user: User) -> SubscriptionModel:
     if not candidates:
         raise NotFound("No active subscription found.")
     return max(candidates, key=lambda s: s.created_at)
+
+
+def _require_billing_authority(user: User) -> UUID | None:
+    """Enforce that *user* may mutate the subscription they'll be acting on.
+
+    Returns the ``org_id`` for ORG_MEMBER users (callers use it to address
+    the notification) or ``None`` for PERSONAL users. Raises
+    ``PermissionDenied`` for ORG_MEMBER users without ``is_billing=True`` on
+    their active membership.
+    """
+    if user.account_type != AccountType.ORG_MEMBER:
+        return None
+
+    from rest_framework.exceptions import PermissionDenied
+
+    from apps.orgs.models import OrgMember
+
+    billing_member = (
+        OrgMember.objects.filter(
+            user_id=user.id,
+            is_billing=True,
+            org__is_active=True,
+            org__deleted_at__isnull=True,
+        )
+        .only("org_id")
+        .first()
+    )
+    if billing_member is None:
+        raise PermissionDenied("Only billing members can modify the team subscription.")
+    return billing_member.org_id
+
+
+def _billing_notice_recipients(user: User, org_id: UUID | None) -> list[str]:
+    """Return the list of emails to notify on a billing-state change.
+
+    PERSONAL subs: just the owner. Team subs: every ``is_billing=True`` member
+    of the org (so a rogue billing contact's action is visible to peers).
+    """
+    if org_id is None:
+        return [str(user.email)]
+
+    from apps.orgs.models import OrgMember
+
+    return list(
+        OrgMember.objects.filter(
+            org_id=org_id,
+            is_billing=True,
+            org__is_active=True,
+            org__deleted_at__isnull=True,
+        ).values_list("user__email", flat=True)
+    )
 
 
 class SubscriptionView(BillingScopedView):
@@ -402,6 +506,8 @@ class SubscriptionView(BillingScopedView):
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
 
+        org_id = _require_billing_authority(user)
+
         plan_price = (
             _get_active_plan_price(data["plan_price_id"]) if "plan_price_id" in data else None
         )
@@ -411,7 +517,7 @@ class SubscriptionView(BillingScopedView):
 
         async def _do() -> None:
             repos = get_billing_repos()
-            customer, sub, stripe_sub_id = await _get_customer_and_paid_subscription(user.id)
+            customer, sub, stripe_sub_id = await _get_customer_and_paid_subscription(user)
             if "cancel_at_period_end" in data:
                 if data["cancel_at_period_end"]:
                     await cancel_subscription(
@@ -444,6 +550,14 @@ class SubscriptionView(BillingScopedView):
 
         async_to_sync(_do)()
         sub = _get_active_subscription_for_user(user)
+        if "cancel_at_period_end" in data:
+            recipients = _billing_notice_recipients(user, org_id)
+            if recipients:
+                send_subscription_cancel_notice_task.delay(
+                    recipients,
+                    sub.plan.name,
+                    "scheduled" if data["cancel_at_period_end"] else "resumed",
+                )
         return Response(SubscriptionSerializer(sub, context=_currency_context(request)).data)
 
     @extend_schema(
@@ -459,9 +573,10 @@ class SubscriptionView(BillingScopedView):
     )
     def delete(self, request: Request) -> Response:
         user = get_user(request)
+        org_id = _require_billing_authority(user)
 
         async def _do() -> None:
-            customer, _, _ = await _get_customer_and_paid_subscription(user.id)
+            customer, _, _ = await _get_customer_and_paid_subscription(user)
             await cancel_subscription(
                 stripe_customer_id=customer.id,
                 at_period_end=True,
@@ -470,6 +585,9 @@ class SubscriptionView(BillingScopedView):
 
         async_to_sync(_do)()
         sub = _get_active_subscription_for_user(user)
+        recipients = _billing_notice_recipients(user, org_id)
+        if recipients:
+            send_subscription_cancel_notice_task.delay(recipients, sub.plan.name, "scheduled")
         return Response(
             SubscriptionSerializer(sub, context=_currency_context(request)).data,
             status=status.HTTP_202_ACCEPTED,

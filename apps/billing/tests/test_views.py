@@ -951,3 +951,217 @@ class TestCurrencyConversion:
         client = APIClient()
         resp = client.get("/api/v1/billing/plans/?currency=")
         assert resp.data["results"][0]["price"]["currency"] == "usd"
+
+
+# ---------------------------------------------------------------------------
+# Team subscription resolution + billing-authority gate on mutations
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def team_org_setup(org_member_user, team_plan, team_plan_price):
+    """Active org owned by an org_member user, with a team StripeCustomer and
+    an active team Subscription. ``org_member_user`` is both OWNER and
+    is_billing=True, matching how ``_create_org_with_owner`` seeds new orgs."""
+    from apps.billing.models import StripeCustomer, Subscription
+    from apps.orgs.models import Org, OrgMember, OrgRole
+
+    org = Org.objects.create(name="Authz Org", slug="authz-org", created_by=org_member_user)
+    OrgMember.objects.create(
+        org=org,
+        user=org_member_user,
+        role=OrgRole.OWNER,
+        is_billing=True,
+    )
+    customer = StripeCustomer.objects.create(stripe_id="cus_team_authz", org=org, livemode=False)
+    subscription = Subscription.objects.create(
+        stripe_id="sub_team_authz",
+        stripe_customer=customer,
+        status="active",
+        plan=team_plan,
+        quantity=3,
+        current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+        current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+    )
+    return org, customer, subscription
+
+
+@pytest.mark.django_db
+class TestTeamSubscriptionResolution:
+    def test_billing_member_get_returns_team_subscription(
+        self, org_member_client, team_org_setup, team_plan
+    ):
+        _, _, sub = team_org_setup
+        resp = org_member_client.get("/api/v1/billing/subscriptions/me/")
+        assert resp.status_code == 200
+        assert str(resp.data["plan"]["id"]) == str(team_plan.id)
+        assert str(resp.data["id"]) == str(sub.id)
+
+    def test_non_billing_member_get_still_returns_team_subscription(
+        self, team_org_setup, team_plan
+    ):
+        """Read access to the team sub is granted to ANY active org member —
+        only mutations require is_billing=True."""
+        from apps.orgs.models import OrgMember, OrgRole
+        from apps.users.models import AccountType, User
+
+        org, _, _ = team_org_setup
+        member_user = User.objects.create_user(
+            email="plain@example.com",
+            full_name="Plain Member",
+            account_type=AccountType.ORG_MEMBER,
+        )
+        OrgMember.objects.create(org=org, user=member_user, role=OrgRole.MEMBER, is_billing=False)
+        client = APIClient()
+        client.force_authenticate(user=member_user)
+
+        resp = client.get("/api/v1/billing/subscriptions/me/")
+        assert resp.status_code == 200
+        assert str(resp.data["plan"]["id"]) == str(team_plan.id)
+
+    def test_org_member_without_membership_returns_404(self, org_member_client):
+        """An org_member user who isn't a member of any active org has no sub
+        to look up."""
+        resp = org_member_client.get("/api/v1/billing/subscriptions/me/")
+        assert resp.status_code == 404
+
+
+@pytest.mark.django_db
+class TestBillingAuthorityOnMutations:
+    @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
+    def test_billing_member_can_delete(self, mock_cancel, org_member_client, team_org_setup):
+        resp = org_member_client.delete("/api/v1/billing/subscriptions/me/")
+        assert resp.status_code == 202
+        mock_cancel.assert_called_once()
+
+    def test_non_billing_member_delete_returns_403(self, team_org_setup):
+        from apps.orgs.models import OrgMember, OrgRole
+        from apps.users.models import AccountType, User
+
+        org, _, _ = team_org_setup
+        member = User.objects.create_user(
+            email="nb-del@example.com",
+            full_name="NB Del",
+            account_type=AccountType.ORG_MEMBER,
+        )
+        OrgMember.objects.create(org=org, user=member, role=OrgRole.MEMBER, is_billing=False)
+        client = APIClient()
+        client.force_authenticate(user=member)
+
+        resp = client.delete("/api/v1/billing/subscriptions/me/")
+        assert resp.status_code == 403
+
+    @patch("apps.billing.views.change_plan", new_callable=AsyncMock)
+    def test_billing_member_can_patch_plan(
+        self, mock_change, org_member_client, team_org_setup, team_plan_price
+    ):
+        resp = org_member_client.patch(
+            "/api/v1/billing/subscriptions/me/",
+            {"plan_price_id": str(team_plan_price.id), "quantity": 3},
+            format="json",
+        )
+        assert resp.status_code == 200
+        mock_change.assert_called_once()
+
+    def test_non_billing_member_patch_returns_403(self, team_org_setup, team_plan_price):
+        from apps.orgs.models import OrgMember, OrgRole
+        from apps.users.models import AccountType, User
+
+        org, _, _ = team_org_setup
+        member = User.objects.create_user(
+            email="nb-patch@example.com",
+            full_name="NB Patch",
+            account_type=AccountType.ORG_MEMBER,
+        )
+        OrgMember.objects.create(org=org, user=member, role=OrgRole.MEMBER, is_billing=False)
+        client = APIClient()
+        client.force_authenticate(user=member)
+
+        resp = client.patch(
+            "/api/v1/billing/subscriptions/me/",
+            {"plan_price_id": str(team_plan_price.id), "quantity": 3},
+            format="json",
+        )
+        assert resp.status_code == 403
+
+
+@pytest.mark.django_db
+class TestCancelNoticeEmail:
+    @patch("apps.billing.views.send_subscription_cancel_notice_task")
+    @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
+    def test_delete_sends_scheduled_notice(
+        self, _mock_cancel, mock_task, authed_client, subscription
+    ):
+        resp = authed_client.delete("/api/v1/billing/subscriptions/me/")
+        assert resp.status_code == 202
+        mock_task.delay.assert_called_once()
+        recipients, label, action = mock_task.delay.call_args.args
+        assert recipients == ["billing@example.com"]
+        assert action == "scheduled"
+        assert label == subscription.plan.name
+
+    @patch("apps.billing.views.send_subscription_cancel_notice_task")
+    @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
+    def test_patch_cancel_at_period_end_true_sends_scheduled(
+        self, _mock_cancel, mock_task, authed_client, subscription
+    ):
+        resp = authed_client.patch(
+            "/api/v1/billing/subscriptions/me/",
+            {"cancel_at_period_end": True},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert mock_task.delay.call_args.args[2] == "scheduled"
+
+    @patch("apps.billing.views.send_subscription_cancel_notice_task")
+    @patch("apps.billing.views.resume_subscription", new_callable=AsyncMock)
+    def test_patch_cancel_at_period_end_false_sends_resumed(
+        self, _mock_resume, mock_task, authed_client, subscription
+    ):
+        resp = authed_client.patch(
+            "/api/v1/billing/subscriptions/me/",
+            {"cancel_at_period_end": False},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert mock_task.delay.call_args.args[2] == "resumed"
+
+    @patch("apps.billing.views.send_subscription_cancel_notice_task")
+    @patch("apps.billing.views.change_plan", new_callable=AsyncMock)
+    def test_patch_plan_change_does_not_send_notice(
+        self, _mock_change, mock_task, authed_client, subscription, plan_price
+    ):
+        resp = authed_client.patch(
+            "/api/v1/billing/subscriptions/me/",
+            {"plan_price_id": str(plan_price.id)},
+            format="json",
+        )
+        assert resp.status_code == 200
+        mock_task.delay.assert_not_called()
+
+    @patch("apps.billing.views.send_subscription_cancel_notice_task")
+    @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
+    def test_team_delete_notifies_every_billing_member(
+        self, _mock_cancel, mock_task, org_member_client, team_org_setup
+    ):
+        from apps.orgs.models import OrgMember, OrgRole
+        from apps.users.models import AccountType, User
+
+        org, _, _ = team_org_setup
+        extra_billing = User.objects.create_user(
+            email="finance@example.com",
+            full_name="Finance",
+            account_type=AccountType.ORG_MEMBER,
+        )
+        OrgMember.objects.create(org=org, user=extra_billing, role=OrgRole.MEMBER, is_billing=True)
+        non_billing = User.objects.create_user(
+            email="eng@example.com",
+            full_name="Eng",
+            account_type=AccountType.ORG_MEMBER,
+        )
+        OrgMember.objects.create(org=org, user=non_billing, role=OrgRole.MEMBER, is_billing=False)
+
+        resp = org_member_client.delete("/api/v1/billing/subscriptions/me/")
+        assert resp.status_code == 202
+        recipients = mock_task.delay.call_args.args[0]
+        assert set(recipients) == {"orgowner@example.com", "finance@example.com"}
