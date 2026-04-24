@@ -36,19 +36,18 @@ class SecurityHeadersMiddleware:
                     f"worker-src blob:; "
                     f"connect-src 'self' {cdn}"
                 )
-            elif path.startswith(("/admin/", "/hijack/", "/dashboard/")):
-                # Server-rendered HTML surfaces — Django admin, hijack acquire/
-                # release, and the /dashboard/ landing page used by the hijack
-                # flow — rely on the admin CSS bundle (inline styles + self
-                # scripts). Explicit `frame-ancestors 'self'` blocks third-party
-                # sites from embedding these in an iframe (clickjacking defense)
-                # — the top-level API CSP sets this to 'none', but the admin CSP
-                # doesn't inherit from it.
+            else:
+                # Every other HTML surface — Django admin, hijack acquire/
+                # release, the /dashboard/ landing page used by hijack, and
+                # DRF's browsable API at /api/... — relies on inline styles
+                # and self scripts. JSON API responses never reach this branch
+                # (the outer content-type check excludes them), so widening
+                # the policy to all HTML is safe: the strict ``default-src
+                # 'none'`` fallback was only ever blocking dev tooling.
+                # Explicit ``frame-ancestors 'self'`` blocks third-party
+                # clickjacking embeds.
                 response["Content-Security-Policy"] = (
                     "default-src 'self'; script-src 'self'; "
                     "style-src 'self' 'unsafe-inline'; frame-ancestors 'self'"
                 )
-            else:
-                # API responses don't render inline styles or scripts; lock down CSP.
-                response["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
         return response
