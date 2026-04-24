@@ -8,7 +8,12 @@ from uuid import UUID
 
 from asgiref.sync import async_to_sync
 from django.core.cache import cache
-from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
+from drf_spectacular.utils import (
+    OpenApiParameter,
+    OpenApiResponse,
+    extend_schema,
+    inline_serializer,
+)
 from rest_framework import serializers as drf_serializers
 from rest_framework import status
 from rest_framework.exceptions import APIException, NotFound, ValidationError
@@ -497,7 +502,18 @@ class SubscriptionView(BillingScopedView):
     @extend_schema(
         parameters=[_CURRENCY_PARAM],
         request=UpdateSubscriptionSerializer,
-        responses={200: SubscriptionSerializer},
+        responses={
+            200: SubscriptionSerializer,
+            403: OpenApiResponse(
+                description=(
+                    "Caller is an ORG_MEMBER without `is_billing=True` on their active"
+                    " org membership — only billing members may modify the team subscription."
+                )
+            ),
+            404: OpenApiResponse(
+                description="No Stripe customer or active paid subscription for the caller."
+            ),
+        },
         tags=["billing"],
     )
     def patch(self, request: Request) -> Response:
@@ -563,7 +579,18 @@ class SubscriptionView(BillingScopedView):
     @extend_schema(
         parameters=[_CURRENCY_PARAM],
         request=None,
-        responses={202: SubscriptionSerializer},
+        responses={
+            202: SubscriptionSerializer,
+            403: OpenApiResponse(
+                description=(
+                    "Caller is an ORG_MEMBER without `is_billing=True` on their active"
+                    " org membership — only billing members may cancel the team subscription."
+                )
+            ),
+            404: OpenApiResponse(
+                description="No Stripe customer or active paid subscription for the caller."
+            ),
+        },
         description=(
             "Schedule subscription cancellation at the end of the current billing period."
             " Returns 202 Accepted — the subscription remains active until the period end"

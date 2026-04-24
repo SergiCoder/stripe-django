@@ -563,6 +563,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/Subscription'
           description: ''
+        '403':
+          description: Caller is an ORG_MEMBER without `is_billing=True` on their
+            active org membership — only billing members may modify the team subscription.
+        '404':
+          description: No Stripe customer or active paid subscription for the caller.
     delete:
       operationId: billing_subscriptions_me_destroy
       description: Schedule subscription cancellation at the end of the current billing
@@ -586,6 +591,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/Subscription'
           description: ''
+        '403':
+          description: Caller is an ORG_MEMBER without `is_billing=True` on their
+            active org membership — only billing members may cancel the team subscription.
+        '404':
+          description: No Stripe customer or active paid subscription for the caller.
   /api/v1/currencies/:
     get:
       operationId: currencies_retrieve
