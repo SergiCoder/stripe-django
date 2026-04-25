@@ -138,6 +138,25 @@ class TestRegisterView:
         assert User.objects.filter(email="emailfail@example.com").exists()
         mock_delay.assert_called_once()
 
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    def test_no_subscription_created(self, _mock_email, api):
+        """PERSONAL registration creates a User but no Subscription —
+        Subscription is a pure Stripe mirror, so it only exists once the
+        user pays. Previously the free plan was assigned at signup."""
+        from apps.billing.models import Subscription
+
+        api.post(
+            self.URL,
+            {
+                "email": "personalnoplan@example.com",
+                "password": "securepass1",
+                "full_name": "No Plan",
+            },
+            format="json",
+        )
+        user = User.objects.get(email="personalnoplan@example.com")
+        assert not Subscription.objects.filter(user=user).exists()
+
 
 # ---------------------------------------------------------------------------
 # RegisterOrgOwnerView
@@ -625,14 +644,10 @@ class TestResetPasswordTokenSecurity:
     def test_token_cannot_be_replayed(self, api, verified_user):
         token = create_password_reset_token(verified_user)
 
-        first = api.post(
-            self.URL, {"token": token, "password": "newpassword1"}, format="json"
-        )
+        first = api.post(self.URL, {"token": token, "password": "newpassword1"}, format="json")
         assert first.status_code == 200
 
-        second = api.post(
-            self.URL, {"token": token, "password": "anotherpass2"}, format="json"
-        )
+        second = api.post(self.URL, {"token": token, "password": "anotherpass2"}, format="json")
         assert second.status_code == 401
         assert second.data["code"] == "token_used"
         # Password not changed to the second attempt's value.
@@ -643,9 +658,7 @@ class TestResetPasswordTokenSecurity:
         token = create_password_reset_token(verified_user)
         tampered = token[:-1] + ("A" if token[-1] != "A" else "B")
 
-        resp = api.post(
-            self.URL, {"token": tampered, "password": "newpassword1"}, format="json"
-        )
+        resp = api.post(self.URL, {"token": tampered, "password": "newpassword1"}, format="json")
         assert resp.status_code == 401
         assert resp.data["code"] == "invalid_token"
         verified_user.refresh_from_db()
@@ -659,9 +672,7 @@ class TestResetPasswordTokenSecurity:
         rec.expires_at = datetime.now(UTC) - timedelta(minutes=1)
         rec.save(update_fields=["expires_at"])
 
-        resp = api.post(
-            self.URL, {"token": token, "password": "newpassword1"}, format="json"
-        )
+        resp = api.post(self.URL, {"token": token, "password": "newpassword1"}, format="json")
         assert resp.status_code == 401
         assert resp.data["code"] == "token_expired"
 

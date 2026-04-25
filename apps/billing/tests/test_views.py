@@ -432,14 +432,53 @@ class TestSubscriptionView:
         resp = client.get("/api/v1/billing/subscriptions/me/")
         assert resp.status_code in (401, 403)
 
+    def test_get_returns_404_after_cancellation_webhook(self, authed_client, user, subscription):
+        """End-to-end: after a `customer.subscription.deleted` webhook is
+        processed, the API surface for the personal user reports no active
+        subscription.
+
+        Previously the cancellation handler created a free fallback row, so a
+        follow-up GET would still return 200; the refactor removed that
+        fallback. The unit tests in core verify the row state — this
+        integration test asserts the absence is observable through the API.
+        """
+        from asgiref.sync import async_to_sync
+        from saasmint_core.services.webhooks import _on_subscription_deleted
+
+        from apps.billing.models import Subscription
+        from apps.billing.repositories import get_webhook_repos
+
+        # Mirror the production shape for personal paid subs: webhook sync
+        # writes user_id directly on the Subscription row (from customer.user_id)
+        # so the deleted handler can take the personal-user branch.
+        subscription.user = user
+        subscription.save(update_fields=["user"])
+
+        # Sanity-check: the API sees the active sub before cancellation.
+        resp = authed_client.get("/api/v1/billing/subscriptions/me/")
+        assert resp.status_code == 200
+
+        repos = get_webhook_repos()
+        async_to_sync(_on_subscription_deleted)({"id": subscription.stripe_id}, repos)
+
+        # The Subscription row still exists in CANCELED state for history,
+        # but the API resolves "current subscription" via active statuses
+        # only — so the user has no active subscription.
+        canceled = Subscription.objects.get(id=subscription.id)
+        assert canceled.status == "canceled"
+
+        # And no fallback Subscription was created for the user.
+        assert Subscription.objects.filter(user=user).count() == 1
+
+        resp = authed_client.get("/api/v1/billing/subscriptions/me/")
+        assert resp.status_code == 404
+
 
 @pytest.mark.django_db
 class TestCancelSubscription:
     @patch("apps.billing.views.send_subscription_cancel_notice_task")
     @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
-    def test_cancels_subscription(
-        self, mock_cancel, _mock_task, authed_client, subscription
-    ):
+    def test_cancels_subscription(self, mock_cancel, _mock_task, authed_client, subscription):
         resp = authed_client.delete("/api/v1/billing/subscriptions/me/")
         # Cancellation takes effect at period end, so the response is 202 Accepted
         # with the still-active subscription echoed back.

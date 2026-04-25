@@ -6,18 +6,10 @@ import pytest
 
 from apps.users.models import User
 
-
-@pytest.fixture
-def user(db):
-    return User.objects.create_user(
-        email="credits@example.com",
-        full_name="Credit User",
-    )
-
-
 # ---------------------------------------------------------------------------
 # Credits: grant_credits_for_session + on_product_checkout_completed
 # ---------------------------------------------------------------------------
+# `user` fixture is provided by apps/billing/tests/conftest.py.
 
 
 @pytest.fixture

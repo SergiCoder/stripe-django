@@ -69,6 +69,20 @@ class TestOAuthCallbackNewUser:
         social = SocialAccount.objects.get(user=user, provider="google")
         assert social.provider_user_id == "12345"
 
+    def test_no_subscription_created(self, client, _oauth_state):
+        """OAuth-created users no longer get a free Subscription assigned —
+        Subscription is a pure Stripe mirror after this refactor."""
+        from apps.billing.models import Subscription
+
+        with patch("apps.users.auth_views.exchange_code", return_value=_mock_exchange()):
+            client.get(
+                "/api/v1/auth/oauth/google/callback/",
+                {"code": "auth-code", "state": "test-state"},
+            )
+        user = User.objects.get(email="oauth@example.com")
+        assert not Subscription.objects.filter(user=user).exists()
+
+
 @pytest.mark.django_db
 class TestOAuthCallbackExistingEmailUser:
     def test_auto_links_social_account(self, client, _oauth_state):
