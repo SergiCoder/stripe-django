@@ -204,6 +204,36 @@ class TestOAuthCallbackReturningSocialUser:
         # No duplicate SocialAccount created
         assert SocialAccount.objects.filter(user=user, provider="github").count() == 1
 
+    def test_returning_microsoft_user_logs_in_even_when_unverified(self, client, _oauth_state):
+        # SocialAccount-by-provider-id lookup short-circuits BEFORE the
+        # email_verified gate (resolve_oauth_user step 1). This matters for
+        # Microsoft specifically: a user who originally signed in pre-fix
+        # already has a SocialAccount row, and on subsequent sign-ins the
+        # id_token may still lack `xms_edov` (consumer MSA, etc.), giving
+        # email_verified=False. They must still be able to log in — only
+        # brand-new users need the verified-email gate.
+        user = User.objects.create_user(
+            email="returning-ms@example.com",
+            full_name="Returning MS",
+            registration_method="microsoft",
+        )
+        SocialAccount.objects.create(user=user, provider="microsoft", provider_user_id="ms-ret")
+
+        info = _mock_exchange(
+            email="returning-ms@example.com",
+            provider_user_id="ms-ret",
+            email_verified=False,
+        )
+        with patch("apps.users.auth_views.exchange_code", return_value=info):
+            resp = client.get(
+                "/api/v1/auth/oauth/microsoft/callback/",
+                {"code": "auth-code", "state": "test-state"},
+            )
+        assert resp.status_code == 302
+        assert "#code=" in resp["Location"]
+        assert "email_not_verified" not in resp["Location"]
+        assert SocialAccount.objects.filter(user=user, provider="microsoft").count() == 1
+
 
 @pytest.mark.django_db
 class TestOAuthCallbackCodeInFragment:

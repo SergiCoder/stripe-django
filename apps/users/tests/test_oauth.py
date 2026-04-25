@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
-from unittest.mock import MagicMock, patch
+from typing import Any, ClassVar
+from unittest.mock import MagicMock, _patch, patch
 
 import httpx
 import jwt
@@ -238,10 +238,14 @@ class TestExchangeCodeMicrosoft:
         assert info.provider_user_id == "ms-oid-4"
         assert info.email_verified is True
 
-    def test_verified_falls_back_to_preferred_username_when_email_claim_missing(self):
+    def test_unverified_when_email_claim_missing_even_if_xms_edov_true(self):
+        # `preferred_username` is mutable / not authorization-safe per
+        # Microsoft docs, and `xms_edov` only attests to the `email` claim's
+        # domain. Without an `email` claim, drop to the unverified path —
+        # we must NOT promote `preferred_username` to a verified email.
         token_resp = _mock_response(json_data={"access_token": "tok", "id_token": "real"})
         user_resp = _mock_response(
-            json_data={"id": "ms-5", "displayName": "Bob"}
+            json_data={"id": "ms-5", "mail": "graph@example.com", "displayName": "Bob"}
         )
         claims = {
             "preferred_username": "bob@verified-tenant.com",
@@ -256,10 +260,14 @@ class TestExchangeCodeMicrosoft:
         ):
             info = exchange_code("microsoft", "c", "https://host/cb")
 
-        assert info.email == "bob@verified-tenant.com"
-        assert info.email_verified is True
+        # Falls through to Graph /me with email_verified=False.
+        assert info.email == "graph@example.com"
+        assert info.email_verified is False
 
-    def test_verified_raises_when_id_token_has_no_email_claim(self):
+    def test_unverified_when_id_token_has_no_email_claim(self):
+        # No verified `email` claim -> fall through to unverified Graph path,
+        # NOT raise. Graph /me still provides a usable email for the
+        # email-link verification flow.
         token_resp = _mock_response(json_data={"access_token": "tok", "id_token": "real"})
         user_resp = _mock_response(
             json_data={"id": "ms-6", "mail": "dan@example.com", "displayName": "Dan"}
@@ -269,9 +277,92 @@ class TestExchangeCodeMicrosoft:
             patch("apps.users.oauth.httpx.post", return_value=token_resp),
             patch("apps.users.oauth.httpx.get", return_value=user_resp),
             patch("apps.users.oauth._verify_microsoft_id_token", return_value=claims),
-            pytest.raises(OAuthError),
         ):
-            exchange_code("microsoft", "c", "https://host/cb")
+            info = exchange_code("microsoft", "c", "https://host/cb")
+
+        assert info.email == "dan@example.com"
+        assert info.email_verified is False
+
+    @pytest.mark.parametrize(
+        "edov_value",
+        [
+            "true",  # string from a non-conformant IdP / future MS change
+            "True",
+            1,  # truthy int — ` is True` must reject
+            "1",
+            False,  # explicit negative
+            None,
+        ],
+        ids=["str-true", "str-True", "int-1", "str-1", "explicit-false", "none"],
+    )
+    def test_unverified_when_xms_edov_is_truthy_but_not_strictly_true(self, edov_value):
+        # The verified path uses `claims.get("xms_edov") is True` — a strict
+        # identity check. Anything other than the bool True (truthy strings,
+        # ints, or explicit False/None) must NOT be promoted to verified,
+        # because Microsoft documents this claim as a JSON boolean and
+        # accepting other shapes risks trusting a forged or upstream-mangled
+        # value.
+        token_resp = _mock_response(json_data={"access_token": "tok", "id_token": "real"})
+        user_resp = _mock_response(
+            json_data={"id": "ms-edov", "mail": "dan@example.com", "displayName": "Dan"}
+        )
+        claims = {
+            "email": "dan@verified-tenant.com",
+            "oid": "ms-oid-edov",
+            "name": "Dan",
+            "xms_edov": edov_value,
+        }
+        with (
+            patch("apps.users.oauth.httpx.post", return_value=token_resp),
+            patch("apps.users.oauth.httpx.get", return_value=user_resp),
+            patch("apps.users.oauth._verify_microsoft_id_token", return_value=claims),
+        ):
+            info = exchange_code("microsoft", "c", "https://host/cb")
+
+        # Falls through to unverified Graph /me path.
+        assert info.email == "dan@example.com"
+        assert info.email_verified is False
+
+    def test_unverified_when_id_token_is_empty_string(self):
+        # `if id_token` short-circuits before invoking the verifier — so an
+        # empty-string id_token (some IdPs return "" instead of omitting the
+        # field) must not be treated as a verifiable token.
+        token_resp = _mock_response(json_data={"access_token": "tok", "id_token": ""})
+        user_resp = _mock_response(
+            json_data={"id": "ms-empty", "mail": "dan@example.com", "displayName": "Dan"}
+        )
+        with (
+            patch("apps.users.oauth.httpx.post", return_value=token_resp),
+            patch("apps.users.oauth.httpx.get", return_value=user_resp),
+            patch("apps.users.oauth._verify_microsoft_id_token") as mock_verify,
+        ):
+            info = exchange_code("microsoft", "c", "https://host/cb")
+
+        mock_verify.assert_not_called()
+        assert info.email == "dan@example.com"
+        assert info.email_verified is False
+
+    def test_verified_provider_user_id_falls_back_to_graph_id_when_oid_missing(self):
+        # `claims.get("oid") or ms["id"]` — if Microsoft omits the `oid` claim
+        # (rare but spec-permitted), provider_user_id must come from Graph /me.
+        token_resp = _mock_response(json_data={"access_token": "tok", "id_token": "real"})
+        user_resp = _mock_response(
+            json_data={"id": "graph-fallback-id", "mail": "x@y.com", "displayName": "X"}
+        )
+        claims = {
+            "email": "alice@verified-tenant.com",
+            "name": "Alice",
+            "xms_edov": True,
+        }
+        with (
+            patch("apps.users.oauth.httpx.post", return_value=token_resp),
+            patch("apps.users.oauth.httpx.get", return_value=user_resp),
+            patch("apps.users.oauth._verify_microsoft_id_token", return_value=claims),
+        ):
+            info = exchange_code("microsoft", "c", "https://host/cb")
+
+        assert info.provider_user_id == "graph-fallback-id"
+        assert info.email_verified is True
 
     def test_falls_back_to_user_principal_name_unverified(self):
         # Unverified path: no id_token, Graph /me gives only userPrincipalName.
@@ -366,7 +457,11 @@ class TestVerifyMicrosoftIdToken:
         "xms_edov": True,
     }
 
-    def _patch_decode(self, return_value=None, side_effect=None):
+    def _patch_decode(
+        self,
+        return_value: dict[str, Any] | None = None,
+        side_effect: BaseException | type[BaseException] | None = None,
+    ) -> tuple[_patch[MagicMock], _patch[MagicMock]]:
         signing_key = MagicMock()
         signing_key.key = "fake-public-key"
         client = MagicMock()
