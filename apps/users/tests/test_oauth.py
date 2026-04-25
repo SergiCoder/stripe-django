@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from typing import Any, ClassVar
-from unittest.mock import MagicMock, _patch, patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 import jwt
@@ -461,7 +462,7 @@ class TestVerifyMicrosoftIdToken:
         self,
         return_value: dict[str, Any] | None = None,
         side_effect: BaseException | type[BaseException] | None = None,
-    ) -> tuple[_patch[MagicMock], _patch[MagicMock]]:
+    ) -> tuple[AbstractContextManager[MagicMock], AbstractContextManager[MagicMock]]:
         signing_key = MagicMock()
         signing_key.key = "fake-public-key"
         client = MagicMock()
