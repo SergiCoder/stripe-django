@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from django.db import IntegrityError, transaction
 
-from apps.billing.services import assign_free_plan
 from apps.users.models import SocialAccount, User
 from apps.users.oauth import OAuthEmailNotVerifiedError, OAuthUserInfo
 
@@ -46,10 +45,10 @@ def resolve_oauth_user(provider: str, user_info: OAuthUserInfo) -> User:
         user = User.objects.get(email__iexact=user_info.email)
     except User.DoesNotExist:
         try:
-            # Atomic covers create_user + assign_free_plan + SocialAccount link
-            # so a partial failure can't leave a user without a free sub or
-            # without the provider linked (retry would then hit the email
-            # collision and follow the existing-user path).
+            # Atomic covers create_user + SocialAccount link so a partial
+            # failure can't leave a user without the provider linked (retry
+            # would then hit the email collision and follow the existing-user
+            # path).
             with transaction.atomic():
                 user = User.objects.create_user(
                     email=user_info.email,
@@ -58,7 +57,6 @@ def resolve_oauth_user(provider: str, user_info: OAuthUserInfo) -> User:
                     is_verified=True,
                     registration_method=provider,
                 )
-                assign_free_plan(user)
                 SocialAccount.objects.get_or_create(
                     provider=provider,
                     provider_user_id=user_info.provider_user_id,

@@ -69,18 +69,6 @@ class TestOAuthCallbackNewUser:
         social = SocialAccount.objects.get(user=user, provider="google")
         assert social.provider_user_id == "12345"
 
-    def test_assigns_free_plan(self, client, _oauth_state):
-        with (
-            patch("apps.users.auth_views.exchange_code", return_value=_mock_exchange()),
-            patch("apps.users.services.assign_free_plan") as mock_plan,
-        ):
-            client.get(
-                "/api/v1/auth/oauth/google/callback/",
-                {"code": "auth-code", "state": "test-state"},
-            )
-        mock_plan.assert_called_once()
-
-
 @pytest.mark.django_db
 class TestOAuthCallbackExistingEmailUser:
     def test_auto_links_social_account(self, client, _oauth_state):

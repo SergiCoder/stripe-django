@@ -684,26 +684,21 @@ async def test_retry_after_crash_still_prunes_free_subscription() -> None:
 
 
 @pytest.mark.anyio
-async def test_paid_cancellation_creates_fresh_free_subscription() -> None:
-    """When a personal paid sub is canceled, the user is moved back to free."""
+async def test_paid_cancellation_marks_canceled_without_fallback() -> None:
+    """A canceled personal paid sub stays as the only row — no free fallback."""
     event_repo = InMemoryStripeEventRepository()
     plan_repo = InMemoryPlanRepository()
     subscription_repo = InMemorySubscriptionRepository()
 
     user_id = uuid4()
-    free_plan = _seed_free_plan(plan_repo)
-
-    paid_sub = make_subscription(
-        stripe_id="sub_paid_cancel",
-        user_id=user_id,
-    )
+    paid_sub = make_subscription(stripe_id="sub_paid_cancel", user_id=user_id)
     await subscription_repo.save(paid_sub)
 
     repos = _make_repos(
         event_repo=event_repo, plan_repo=plan_repo, subscription_repo=subscription_repo
     )
     event = {
-        "id": "evt_cancel_fallback",
+        "id": "evt_cancel_no_fallback",
         "type": "customer.subscription.deleted",
         "livemode": False,
         "data": {"object": {"id": "sub_paid_cancel"}},
@@ -712,29 +707,19 @@ async def test_paid_cancellation_creates_fresh_free_subscription() -> None:
 
     await process_stored_event(event, stripe_id, repos)
 
-    # Old paid sub is canceled
     canceled = subscription_repo._store[paid_sub.id]
     assert canceled.status == SubscriptionStatus.CANCELED
     assert canceled.canceled_at is not None
-
-    # A new free sub now exists for the same user
-    free_subs = [
-        s for s in subscription_repo._store.values() if s.stripe_id is None and s.user_id == user_id
-    ]
-    assert len(free_subs) == 1
-    new_free = free_subs[0]
-    assert new_free.status == SubscriptionStatus.ACTIVE
-    assert new_free.plan_id == free_plan.id
-    assert new_free.stripe_customer_id is None
+    # Subscription is a pure Stripe mirror — no free row is created.
+    assert len(subscription_repo._store) == 1
 
 
 @pytest.mark.anyio
-async def test_org_cancellation_does_not_create_free_subscription() -> None:
-    """Org subs (user_id=None) are skipped — there's no team-level free plan."""
+async def test_org_cancellation_marks_canceled_only() -> None:
+    """Org subs (user_id=None) are also flipped to CANCELED with no extra row."""
     event_repo = InMemoryStripeEventRepository()
     plan_repo = InMemoryPlanRepository()
     subscription_repo = InMemorySubscriptionRepository()
-    _seed_free_plan(plan_repo)
 
     org_paid_sub = make_subscription(stripe_id="sub_org_cancel", user_id=None)
     await subscription_repo.save(org_paid_sub)
@@ -753,7 +738,6 @@ async def test_org_cancellation_does_not_create_free_subscription() -> None:
     await process_stored_event(event, stripe_id, repos)
 
     assert subscription_repo._store[org_paid_sub.id].status == SubscriptionStatus.CANCELED
-    # No new free subscription created
     assert len(subscription_repo._store) == 1
 
 

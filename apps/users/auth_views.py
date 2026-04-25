@@ -27,7 +27,6 @@ from apps.base_views import (
     AuthRegisterView,
     AuthScopedView,
 )
-from apps.billing.services import assign_free_plan
 from apps.users.auth_serializers import (
     ChangePasswordSerializer,
     ForgotPasswordSerializer,
@@ -84,21 +83,14 @@ def _register_user(
     email: str,
     password: str,
     full_name: str,
-    assign_free: bool,
+    account_type: AccountType,
 ) -> Response:
-    """Create a new user and return a 201 token response.
-
-    ``assign_free=True`` creates a PERSONAL user and assigns the free plan;
-    ``assign_free=False`` creates an ORG_MEMBER user (team checkout will later
-    create the org + subscription).
-    """
+    """Create a new user and return a 201 token response."""
     if email_is_registered(email):
         return Response(
             {"detail": "Email already registered.", "code": "email_exists"},
             status=status.HTTP_409_CONFLICT,
         )
-
-    account_type = AccountType.PERSONAL if assign_free else AccountType.ORG_MEMBER
 
     try:
         with transaction.atomic():
@@ -114,9 +106,6 @@ def _register_user(
             {"detail": "Email already registered.", "code": "email_exists"},
             status=status.HTTP_409_CONFLICT,
         )
-
-    if assign_free:
-        assign_free_plan(user)
 
     token = create_email_verification_token(user)
     send_verification_email_task.delay(user.email, token)
@@ -140,15 +129,15 @@ class RegisterView(AuthRegisterView):
             email=ser.validated_data["email"],
             password=ser.validated_data["password"],
             full_name=ser.validated_data["full_name"],
-            assign_free=True,
+            account_type=AccountType.PERSONAL,
         )
 
 
 class RegisterOrgOwnerView(AuthRegisterView):
     """POST /api/v1/auth/register/org-owner — register as an org owner.
 
-    Creates a user with account_type=ORG_MEMBER. No free plan is assigned;
-    the user must complete team checkout to create an org and subscription.
+    Creates a user with account_type=ORG_MEMBER; the user must complete team
+    checkout to create an org and subscription.
     """
 
     @extend_schema(
@@ -163,7 +152,7 @@ class RegisterOrgOwnerView(AuthRegisterView):
             email=ser.validated_data["email"],
             password=ser.validated_data["password"],
             full_name=ser.validated_data["full_name"],
-            assign_free=False,
+            account_type=AccountType.ORG_MEMBER,
         )
 
 
