@@ -69,6 +69,28 @@ class TestOAuthCallbackNewUser:
         social = SocialAccount.objects.get(user=user, provider="google")
         assert social.provider_user_id == "12345"
 
+    def test_microsoft_creates_verified_user_and_logs_in(self, client, _oauth_state):
+        info = _mock_exchange(
+            email="dan@example.com",
+            provider_user_id="ms-1",
+            email_verified=True,
+        )
+        with patch("apps.users.auth_views.exchange_code", return_value=info):
+            resp = client.get(
+                "/api/v1/auth/oauth/microsoft/callback/",
+                {"code": "auth-code", "state": "test-state"},
+            )
+        assert resp.status_code == 302
+        assert "#code=" in resp["Location"]
+        assert "email_not_verified" not in resp["Location"]
+
+        user = User.objects.get(email="dan@example.com")
+        assert user.registration_method == "microsoft"
+        assert user.is_verified is True
+        assert SocialAccount.objects.filter(
+            user=user, provider="microsoft", provider_user_id="ms-1"
+        ).exists()
+
     def test_no_subscription_created(self, client, _oauth_state):
         """OAuth-created users no longer get a free Subscription assigned —
         Subscription is a pure Stripe mirror after this refactor."""

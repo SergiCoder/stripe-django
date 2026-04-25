@@ -158,7 +158,7 @@ class TestExchangeCodeGitHub:
 
 
 class TestExchangeCodeMicrosoft:
-    def test_returns_unverified_even_when_mail_present(self):
+    def test_returns_verified_user_info_from_mail(self):
         token_resp = _mock_response(json_data={"access_token": "tok"})
         user_resp = _mock_response(
             json_data={"id": "ms-1", "mail": "dan@example.com", "displayName": "Dan"}
@@ -171,7 +171,7 @@ class TestExchangeCodeMicrosoft:
 
         assert info.email == "dan@example.com"
         assert info.full_name == "Dan"
-        assert info.email_verified is False
+        assert info.email_verified is True
 
     def test_falls_back_to_user_principal_name(self):
         token_resp = _mock_response(json_data={"access_token": "tok"})
@@ -185,6 +185,7 @@ class TestExchangeCodeMicrosoft:
             info = exchange_code("microsoft", "c", "https://host/cb")
 
         assert info.email == "eve@example.com"
+        assert info.email_verified is True
 
     def test_raises_when_email_missing(self):
         token_resp = _mock_response(json_data={"access_token": "tok"})
