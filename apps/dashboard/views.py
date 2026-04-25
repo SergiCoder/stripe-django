@@ -65,9 +65,7 @@ class HijackReleaseView(ReleaseUserView):
     instead of returning 405.
     """
 
-    def dispatch(
-        self, request: HttpRequest, *args: object, **kwargs: object
-    ) -> HttpResponse:
+    def dispatch(self, request: HttpRequest, *args: object, **kwargs: object) -> HttpResponse:
         if request.method == "GET":
             return HttpResponseRedirect(reverse("admin:index"))
         return super().dispatch(request, *args, **kwargs)
