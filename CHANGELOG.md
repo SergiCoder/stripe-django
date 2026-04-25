@@ -8,6 +8,19 @@ From `v0.7.0` onward, `saasmint-core` (root), `saasmint-core-lib` (`core/`),
 and the frontend `saasmint-app` ship in lockstep — a `v<X.Y.Z>` tag is
 only valid if all three repos already match `<X.Y.Z>` on `main`.
 
+## [0.7.2] - 2026-04-25
+
+### Fixed
+
+- **Microsoft OAuth login no longer redirects to `email_not_verified`.**
+  `exchange_code` now returns `email_verified=True` for the Microsoft
+  branch, on par with Google (`email_verified: true`) and GitHub (primary
+  verified email from `/user/emails`). The OAuth handshake itself
+  establishes ownership of the email returned by Microsoft Graph `/me`
+  (work/school tenant or consumer MSA), so a fresh Microsoft sign-in
+  now creates the user with `is_verified=True` and lands on the success
+  redirect instead of bouncing through `/auth/error`.
+
 ## [0.7.1] - 2026-04-25
 
 ### Fixed
