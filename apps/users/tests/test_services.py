@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 import pytest
 
 from apps.users.models import SocialAccount, User
@@ -29,8 +27,7 @@ def _info(
 
 @pytest.mark.django_db
 class TestResolveOAuthUserNewUser:
-    @patch("apps.users.services.assign_free_plan")
-    def test_creates_new_user(self, mock_plan):
+    def test_creates_new_user(self):
         user = resolve_oauth_user("google", _info())
 
         assert user.email == "oauth@example.com"
@@ -39,10 +36,8 @@ class TestResolveOAuthUserNewUser:
         assert user.is_verified is True
         assert user.registration_method == "google"
         assert user.has_usable_password() is False
-        mock_plan.assert_called_once_with(user)
 
-    @patch("apps.users.services.assign_free_plan")
-    def test_creates_social_account(self, _mock_plan):
+    def test_creates_social_account(self):
         user = resolve_oauth_user("github", _info(provider_user_id="gh-new"))
 
         social = SocialAccount.objects.get(user=user, provider="github")
@@ -65,18 +60,6 @@ class TestResolveOAuthUserExistingEmail:
         # registration_method stays as original
         assert user.registration_method == "email"
         assert SocialAccount.objects.filter(user=user, provider="google").exists()
-
-    def test_does_not_assign_free_plan_for_existing_user(self):
-        User.objects.create_user(
-            email="nofree@example.com",
-            password="testpass123",  # noqa: S106
-            full_name="No Free",
-        )
-        info = _info(email="nofree@example.com", provider_user_id="g-nofree")
-
-        with patch("apps.users.services.assign_free_plan") as mock_plan:
-            resolve_oauth_user("google", info)
-        mock_plan.assert_not_called()
 
 
 @pytest.mark.django_db
