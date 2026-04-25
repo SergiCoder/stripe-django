@@ -12,11 +12,7 @@ from uuid import UUID, uuid4
 
 import stripe
 
-from saasmint_core.domain.subscription import (
-    FREE_SUBSCRIPTION_PERIOD_END,
-    Subscription,
-    SubscriptionStatus,
-)
+from saasmint_core.domain.subscription import Subscription, SubscriptionStatus
 from saasmint_core.repositories.customer import StripeCustomerRepository
 from saasmint_core.repositories.plan import PlanRepository
 from saasmint_core.repositories.stripe_event import StripeEventRepository
@@ -246,23 +242,16 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
 
     await repos.subscriptions.save(subscription)
 
-    # Prune the placeholder free subscription for personal users whenever they
-    # have a paid sub synced. Runs on every created/updated event (not just the
-    # first) so that retries after a crash between save() and cleanup still
-    # converge — delete_free_for_user is a filtered DELETE and idempotent.
-    if customer.user_id is not None and not subscription.is_free:
-        deleted = await repos.subscriptions.delete_free_for_user(customer.user_id)
-        if deleted:
-            logger.info(
-                "Removed %d free subscription(s) for user %s after sync of %s",
-                deleted,
-                customer.user_id,
-                stripe_sub_id,
-            )
-
 
 async def _on_subscription_deleted(sub_data: dict[str, Any], repos: WebhookRepos) -> None:
-    """Mark a subscription as canceled and auto-fallback personal users to free."""
+    """Mark a subscription as canceled.
+
+    Personal users: row stays in CANCELED state for history; the user has no
+    active subscription afterward (Subscription is a pure Stripe mirror — no
+    free-tier fallback row).
+
+    Team subs: also deactivate the org so members lose access immediately.
+    """
     stripe_sub_id = str(sub_data["id"])
     existing = await repos.subscriptions.get_by_stripe_id(stripe_sub_id)
     if existing is None:
@@ -275,10 +264,8 @@ async def _on_subscription_deleted(sub_data: dict[str, Any], repos: WebhookRepos
     )
     await repos.subscriptions.save(canceled)
 
-    # Org subscriptions: deactivate the org so members lose access immediately.
-    if existing.user_id is None:
-        if existing.stripe_customer_id is None:
-            return
+    # Team subs (no user_id): deactivate the org via the registered callback.
+    if existing.user_id is None and existing.stripe_customer_id is not None:
         customer = await repos.customers.get_by_id(existing.stripe_customer_id)
         if customer is not None and customer.org_id is not None:
             if repos.on_org_subscription_canceled is not None:
@@ -288,31 +275,6 @@ async def _on_subscription_deleted(sub_data: dict[str, Any], repos: WebhookRepos
                     "Org subscription %s canceled but no deactivation callback registered",
                     stripe_sub_id,
                 )
-        return
-
-    free_plan = await repos.plans.get_free_plan()
-    if free_plan is None:
-        logger.warning(
-            "No free plan found; user %s has no active subscription after %s cancellation",
-            existing.user_id,
-            stripe_sub_id,
-        )
-        return
-
-    await repos.subscriptions.save(
-        Subscription(
-            id=uuid4(),
-            stripe_id=None,
-            stripe_customer_id=None,
-            user_id=existing.user_id,
-            status=SubscriptionStatus.ACTIVE,
-            plan_id=free_plan.id,
-            quantity=1,
-            current_period_start=now,
-            current_period_end=FREE_SUBSCRIPTION_PERIOD_END,
-            created_at=now,
-        )
-    )
 
 
 async def _on_invoice_paid(invoice_data: dict[str, Any]) -> None:

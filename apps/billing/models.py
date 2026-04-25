@@ -72,13 +72,6 @@ class Plan(models.Model):
     def __str__(self) -> str:
         return f"{self.name} ({self.interval})"
 
-    @classmethod
-    def free_plans(cls) -> models.QuerySet[Plan]:
-        """Queryset of active personal plans on the free tier."""
-        return cls.objects.filter(
-            is_active=True, context=PlanContext.PERSONAL, tier=PlanTier.FREE
-        ).select_related("price")
-
 
 class PlanPrice(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -178,16 +171,6 @@ class Subscription(models.Model):
             models.CheckConstraint(
                 condition=(models.Q(user__isnull=False) | models.Q(stripe_customer__isnull=False)),
                 name="subscription_has_owner",
-            ),
-            # Enforce at most one free subscription per user. Paid rows
-            # (stripe_id IS NOT NULL) are excluded, so the constraint only
-            # guards the free fallback path — backstopping the row lock in
-            # assign_free_plan against duplicate-free races and preventing
-            # paid/free coexistence from ever going unbounded on the free side.
-            models.UniqueConstraint(
-                fields=["user"],
-                condition=models.Q(stripe_id__isnull=True),
-                name="uniq_free_subscription_per_user",
             ),
         ]
 
