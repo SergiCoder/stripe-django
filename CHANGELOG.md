@@ -12,14 +12,28 @@ only valid if all three repos already match `<X.Y.Z>` on `main`.
 
 ### Fixed
 
-- **Microsoft OAuth login no longer redirects to `email_not_verified`.**
-  `exchange_code` now returns `email_verified=True` for the Microsoft
-  branch, on par with Google (`email_verified: true`) and GitHub (primary
-  verified email from `/user/emails`). The OAuth handshake itself
-  establishes ownership of the email returned by Microsoft Graph `/me`
-  (work/school tenant or consumer MSA), so a fresh Microsoft sign-in
-  now creates the user with `is_verified=True` and lands on the success
-  redirect instead of bouncing through `/auth/error`.
+- **Microsoft OAuth login signs verified-tenant users in directly.**
+  The Microsoft callback now parses and validates the OIDC `id_token`
+  returned alongside the access token (signature verified against
+  Microsoft's JWKS at `login.microsoftonline.com/common/discovery/v2.0/keys`,
+  audience pinned to `OAUTH_MICROSOFT_CLIENT_ID`, issuer prefix-checked
+  against `https://login.microsoftonline.com/{tid}/v2.0`). When the
+  token's `xms_edov` claim is `true` — Microsoft's attestation that the
+  email's domain belongs to the user's tenant — the user is signed in
+  with `is_verified=True`, mirroring the Google/GitHub UX. Otherwise
+  (no `id_token`, signature/audience failure, or `xms_edov` absent /
+  false) the flow falls back to the existing unverified path and the
+  user is bounced to `/auth/error?error=email_not_verified`.
+
+### Security
+
+- **Microsoft Graph `/me` is no longer treated as proof of email
+  ownership.** A tenant admin can set a user's `mail` attribute to any
+  string (including a third-party domain) without verifying the
+  destination mailbox; combined with the email-match auto-link in
+  `resolve_oauth_user`, naïvely trusting `/me.mail` would have enabled
+  account takeover of an existing password-registered user. Trust now
+  flows from the signed `id_token`'s `xms_edov` claim, not Graph.
 
 ## [0.7.1] - 2026-04-25
 
