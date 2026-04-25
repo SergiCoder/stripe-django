@@ -8,6 +8,33 @@ From `v0.7.0` onward, `saasmint-core` (root), `saasmint-core-lib` (`core/`),
 and the frontend `saasmint-app` ship in lockstep — a `v<X.Y.Z>` tag is
 only valid if all three repos already match `<X.Y.Z>` on `main`.
 
+## [0.7.2] - 2026-04-25
+
+### Fixed
+
+- **Microsoft OAuth login signs verified-tenant users in directly.**
+  The Microsoft callback now parses and validates the OIDC `id_token`
+  returned alongside the access token (signature verified against
+  Microsoft's JWKS at `login.microsoftonline.com/common/discovery/v2.0/keys`,
+  audience pinned to `OAUTH_MICROSOFT_CLIENT_ID`, issuer prefix-checked
+  against `https://login.microsoftonline.com/{tid}/v2.0`). When the
+  token's `xms_edov` claim is `true` — Microsoft's attestation that the
+  email's domain belongs to the user's tenant — the user is signed in
+  with `is_verified=True`, mirroring the Google/GitHub UX. Otherwise
+  (no `id_token`, signature/audience failure, or `xms_edov` absent /
+  false) the flow falls back to the existing unverified path and the
+  user is bounced to `/auth/error?error=email_not_verified`.
+
+### Security
+
+- **Microsoft Graph `/me` is no longer treated as proof of email
+  ownership.** A tenant admin can set a user's `mail` attribute to any
+  string (including a third-party domain) without verifying the
+  destination mailbox; combined with the email-match auto-link in
+  `resolve_oauth_user`, naïvely trusting `/me.mail` would have enabled
+  account takeover of an existing password-registered user. Trust now
+  flows from the signed `id_token`'s `xms_edov` claim, not Graph.
+
 ## [0.7.1] - 2026-04-25
 
 ### Fixed
