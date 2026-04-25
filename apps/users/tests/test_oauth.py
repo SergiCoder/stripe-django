@@ -524,3 +524,16 @@ class TestVerifyMicrosoftIdToken:
         jwks_patch, decode_patch = self._patch_decode(return_value=no_iss)
         with jwks_patch, decode_patch:
             assert _verify_microsoft_id_token("no-iss-jwt") is None
+
+    def test_returns_none_when_issuer_has_microsoft_prefix_but_wrong_suffix(self):
+        # A Microsoft-prefixed issuer with a non-`/v2.0` suffix (e.g. legacy
+        # v1.0 STS endpoint) must be rejected — the verifier explicitly
+        # validates BOTH ends of the issuer string. This pins the suffix
+        # check so a future refactor can't quietly drop it.
+        legacy_v1 = {
+            **self._GOOD_CLAIMS,
+            "iss": "https://login.microsoftonline.com/abc-tenant-id/",
+        }
+        jwks_patch, decode_patch = self._patch_decode(return_value=legacy_v1)
+        with jwks_patch, decode_patch:
+            assert _verify_microsoft_id_token("v1-jwt") is None
