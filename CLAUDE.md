@@ -91,6 +91,11 @@ For bugs touching infra, proxy (Caddy/Nginx), OAuth, or deploy:
 **Django**
 - Don't hand-edit auto-generated migrations beyond formatting — regenerate instead.
 
+**Versioning**
+- Every PR bumps `pyproject.toml` AND `core/pyproject.toml` to the same target semver. The bump is the last commit on the branch before opening the PR; both files must agree at HEAD.
+- The backend (`saasmint-core` + `saasmint-core-lib`) and the frontend (`saasmint-app`) ship in lockstep — a `v<X.Y.Z>` tag is only valid if the matching tag exists in the other repo. When opening a PR here, surface the chosen version to the user so they can bump the frontend to match.
+- `/prism:release` reads only the first version field it finds. Don't trust it to keep both `pyproject.toml`s aligned — verify manually before tagging.
+
 ## Accepted type: ignore / noqa suppressions
 
 The following suppressions are intentional and should not be removed. They stem from upstream library limitations or deliberate design choices.
