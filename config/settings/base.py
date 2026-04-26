@@ -49,6 +49,7 @@ class _Env(BaseSettings):
     oauth_github_client_secret: str = ""
     oauth_microsoft_client_id: str = ""
     oauth_microsoft_client_secret: str = ""
+    marketing_inquiries_to: str = ""  # admin inbox for landing-CTA / Contact-form submissions
     enable_session_auth: bool = False  # dev-only: allows browsable API via Django session
 
 
@@ -96,6 +97,7 @@ INSTALLED_APPS = [
     "apps.orgs",
     "apps.admin_panel",
     "apps.dashboard",
+    "apps.marketing",
 ]
 
 MIDDLEWARE = [
@@ -186,6 +188,11 @@ REST_FRAMEWORK = {
         "auth_login": "5/minute",
         "auth_register": "5/minute",
         "auth_refresh": "60/minute",
+        # Marketing inquiries get a dedicated, much tighter scope: the failure
+        # mode (admin inbox flooded by a single IP) is more direct than auth's
+        # (outbound spam, contained by Resend reputation), and the traffic
+        # shape is one-and-done rather than bursty.
+        "marketing_inquiries": "3/10minute",
         "billing": "100/hour",
         "account": "120/hour",
         "account_export": "3/hour",
@@ -266,6 +273,9 @@ OAUTH_GITHUB_CLIENT_ID = env.oauth_github_client_id
 OAUTH_GITHUB_CLIENT_SECRET = env.oauth_github_client_secret
 OAUTH_MICROSOFT_CLIENT_ID = env.oauth_microsoft_client_id
 OAUTH_MICROSOFT_CLIENT_SECRET = env.oauth_microsoft_client_secret
+
+# Marketing
+MARKETING_INQUIRIES_TO = env.marketing_inquiries_to
 
 # django-hijack
 HIJACK_REGISTER_ADMIN_ACTIONS = True
