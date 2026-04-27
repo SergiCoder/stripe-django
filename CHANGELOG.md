@@ -22,11 +22,17 @@ only valid if all three repos already match `<X.Y.Z>` on `main`.
 
 ### Fixed
 
-- **Org-deletion sub-cancel task is now idempotent.**
-  `cancel_stripe_subs_task` swallows Stripe `resource_missing`
-  (`InvalidRequestError`) so a DELETE-then-webhook race or a Celery
-  retry after partial success no longer raises. Other `StripeError`s
-  still propagate so Celery records the failure for retry/inspection.
+- **Org-deletion sub-cancel task is now idempotent and per-item
+  fault-isolated.** `cancel_stripe_subs_task` swallows Stripe
+  `resource_missing` (`InvalidRequestError`) so a DELETE-then-webhook
+  race or a Celery retry after partial success no longer raises. A
+  transient Stripe error on one `sub_id` (e.g. `APIConnectionError`,
+  or a non-`resource_missing` `InvalidRequestError`) no longer
+  short-circuits the loop — every sub in the batch is still attempted,
+  then the first failure is re-raised at end-of-loop so Celery records
+  it. Without this, with no `autoretry_for` on the task, subs
+  positioned after the failing one would have leaked: never cancelled,
+  never reattempted.
 - **`deactivate_org` is a no-op when the org row is already gone.**
   Covers the DELETE-then-webhook race where
   `customer.subscription.deleted` fires after the org has been
