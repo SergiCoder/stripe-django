@@ -563,8 +563,6 @@ async def test_org_cancellation_marks_canceled_only() -> None:
     assert len(subscription_repo._store) == 1
 
 
-
-
 # ── Basil API: period fields on items ────────────────────────────────────────
 
 
