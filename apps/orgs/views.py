@@ -255,9 +255,7 @@ class OrgMemberDetailView(OrgsScopedView):
     def patch(self, request: Request, org_id: UUID, member_user_id: UUID) -> Response:
         user = get_user(request)
         _, caller = _get_org_and_member(user.id, org_id, allowed_roles=_ADMIN_OR_ABOVE)
-        target = get_object_or_404(
-            OrgMember, org_id=org_id, user_id=member_user_id
-        )
+        target = get_object_or_404(OrgMember, org_id=org_id, user_id=member_user_id)
 
         check_can_manage_member(
             caller_role=CoreOrgRole(caller.role),
@@ -351,9 +349,7 @@ class OrgOwnerView(OrgsScopedView):
 
         target_user_id = ser.validated_data["user_id"]
 
-        target = get_object_or_404(
-            OrgMember, org_id=org_id, user_id=target_user_id
-        )
+        target = get_object_or_404(OrgMember, org_id=org_id, user_id=target_user_id)
 
         if target.role != OrgRole.ADMIN:
             raise InsufficientPermissionError("Ownership can only be transferred to an admin.")

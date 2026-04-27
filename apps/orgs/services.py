@@ -367,11 +367,7 @@ def decrement_subscription_seats(org_id: UUID) -> None:
     # inside the txn and push to Stripe only after commit to avoid holding
     # DB locks across the external API call.
     with transaction.atomic():
-        new_quantity = (
-            OrgMember.objects.select_for_update()
-            .filter(org_id=org_id)
-            .count()
-        )
+        new_quantity = OrgMember.objects.select_for_update().filter(org_id=org_id).count()
 
     if new_quantity < 1:
         return
