@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
+from django.db import IntegrityError
 
 from apps.users.models import SocialAccount, User
 from apps.users.oauth import (
@@ -197,4 +200,70 @@ class TestResolveOAuthUserTrustList:
         assert user.email == "brand-new@example.com"
         assert SocialAccount.objects.filter(
             user=user, provider="future_provider", provider_user_id="future-new"
+        ).exists()
+
+
+@pytest.mark.django_db
+class TestResolveOAuthUserCreateRace:
+    """Concurrent-creation recovery: another request created the user with
+    the same email between our ``filter().first()`` lookup and our
+    ``create_user`` call. The IntegrityError must be caught and the
+    existing-user trust check re-applied on the now-existing row."""
+
+    def test_integrity_error_recovers_via_link_or_collide_trusted(self):
+        """Race recovery on a trusted provider auto-links onto the row that
+        won the race instead of bubbling the IntegrityError."""
+        winner = User.objects.create_user(
+            email="race@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Race Winner",
+        )
+        info = _info(email="race@example.com", provider_user_id="g-race")
+
+        original_create_user = User.objects.create_user
+        call_count = {"n": 0}
+
+        def fail_first_create(*args: object, **kwargs: object) -> User:
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                # Simulate the race: the initial ``filter().first()`` lookup
+                # missed the row, but a concurrent request inserted it before
+                # our INSERT, which now collides on the unique email key.
+                raise IntegrityError("duplicate key value violates unique constraint")
+            return original_create_user(*args, **kwargs)  # type: ignore[no-any-return]
+
+        with patch.object(User.objects, "create_user", side_effect=fail_first_create):
+            user = resolve_oauth_user("google", info)
+
+        assert user.pk == winner.pk
+        assert SocialAccount.objects.filter(
+            user=winner, provider="google", provider_user_id="g-race"
+        ).exists()
+
+    def test_integrity_error_recovers_and_collides_for_untrusted_provider(self):
+        """Race recovery on an untrusted provider must still raise
+        :exc:`OAuthEmailUnverifiedCollisionError` — the recovery path
+        re-applies the trust check, it doesn't bypass it."""
+        User.objects.create_user(
+            email="race-untrusted@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Race Untrusted",
+        )
+        info = _info(
+            email="race-untrusted@example.com",
+            provider_user_id="future-race",
+            email_verified=True,
+        )
+
+        def always_fail(*args: object, **kwargs: object) -> User:
+            raise IntegrityError("duplicate key value violates unique constraint")
+
+        with (
+            patch.object(User.objects, "create_user", side_effect=always_fail),
+            pytest.raises(OAuthEmailUnverifiedCollisionError),
+        ):
+            resolve_oauth_user("future_provider", info)
+
+        assert not SocialAccount.objects.filter(
+            provider="future_provider", provider_user_id="future-race"
         ).exists()
