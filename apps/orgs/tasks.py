@@ -30,13 +30,21 @@ def decrement_subscription_seats_task(org_id: str) -> None:
 
 @app.task  # type: ignore[untyped-decorator]  # celery has no stubs
 def cancel_stripe_subs_task(stripe_sub_ids: list[str], org_id: str) -> None:
-    """Cancel a batch of Stripe subscriptions off the request path (post org delete)."""
+    """Cancel a batch of Stripe subscriptions off the request path (post org delete).
+
+    prorate=False — org deletion is a terminal action; we don't refund the
+    unused time. Already-cancelled subs (resource_missing) are swallowed so a
+    DELETE-then-webhook race or a Celery retry is idempotent. Other StripeError
+    causes propagate so Celery records the failure for retry/inspection.
+    """
     for sub_id in stripe_sub_ids:
         try:
-            stripe.Subscription.cancel(sub_id)
-        except stripe.StripeError:
-            logger.exception(
-                "Failed to cancel Stripe sub %s for org %s",
+            stripe.Subscription.cancel(sub_id, prorate=False)
+        except stripe.InvalidRequestError as exc:
+            if exc.code != "resource_missing":
+                raise
+            logger.info(
+                "Stripe sub %s already cancelled for org %s (idempotent)",
                 sub_id,
                 org_id,
             )

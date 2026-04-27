@@ -202,6 +202,15 @@ class TestOrgDetailViewDELETE:
         resp = client.delete(f"/api/v1/orgs/{org.id}/")
         assert resp.status_code in (401, 403)
 
+    @patch("apps.orgs.tasks.cancel_stripe_subs_task")
+    def test_double_delete_is_idempotent(self, _mock_cancel, authed_client, org, owner_membership):
+        """Second DELETE after a successful one returns 404 (org already gone)."""
+        org_id = org.id
+        first = authed_client.delete(f"/api/v1/orgs/{org_id}/")
+        assert first.status_code == 204
+        second = authed_client.delete(f"/api/v1/orgs/{org_id}/")
+        assert second.status_code == 404
+
 
 # ---------------------------------------------------------------------------
 # Org Members (GET /api/v1/orgs/{orgId}/members/)

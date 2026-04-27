@@ -336,7 +336,7 @@ class TestAccountViewDELETE:
         assert not User.objects.filter(id=user.id).exists()
         assert not StripeCustomer.objects.filter(id=cust.id).exists()
         mock_cust_del.assert_called_once_with("cus_gdpr_del")
-        mock_sub_cancel.assert_called_once_with("sub_gdpr_del")
+        mock_sub_cancel.assert_called_once_with("sub_gdpr_del", prorate=False)
 
     @patch("saasmint_core.services.gdpr.stripe.Customer.delete")
     def test_delete_without_stripe_customer_still_hard_deletes_user(

@@ -390,12 +390,12 @@ def decrement_subscription_seats(org_id: UUID) -> None:
 
 
 def _cancel_team_subscription(org: Org) -> None:
-    """Cancel the team subscription for an org via Stripe (immediate cancellation)."""
+    """Cancel the team subscription for an org via Stripe (immediate, no refund)."""
     sub = _get_active_stripe_sub(org.id)
     if sub is None or sub.stripe_id is None:
         return
     try:
-        stripe.Subscription.cancel(sub.stripe_id)
+        stripe.Subscription.cancel(sub.stripe_id, prorate=False)
     except stripe.StripeError:
         logger.exception(
             "Failed to cancel Stripe sub %s for org %s",
