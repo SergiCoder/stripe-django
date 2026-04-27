@@ -25,15 +25,14 @@ def generate_unique_slug(name: str) -> str:
     """Generate a unique org slug from a name.
 
     Slugifies the name, ensures it matches [a-z0-9][a-z0-9-]*[a-z0-9] (min 2 chars),
-    and appends a numeric suffix if the slug is already taken by an active org.
+    and appends a numeric suffix if the slug is already taken.
 
     Race semantics: this is a best-effort generator, not a guarantee. The
     scan + pick is not transactional, so two concurrent callers can land on
-    the same candidate. The partial unique index on `Org.slug` where
-    `deleted_at IS NULL` (see `idx_orgs_slug_active`) is the authoritative
-    uniqueness enforcer — callers are expected to wrap the `Org.create()`
-    in a try/except for `IntegrityError` and retry if they must survive a
-    lost race (see `_create_org_with_owner`).
+    the same candidate. The unique index on `Org.slug` (`idx_orgs_slug_active`)
+    is the authoritative uniqueness enforcer — callers are expected to wrap
+    the `Org.create()` in a try/except for `IntegrityError` and retry if they
+    must survive a lost race (see `_create_org_with_owner`).
     """
     base = slugify(name)
     # Strip any characters not in [a-z0-9-]
@@ -55,7 +54,6 @@ def generate_unique_slug(name: str) -> str:
         slug
         for slug in Org.objects.filter(
             slug__startswith=base,
-            deleted_at__isnull=True,
         ).values_list("slug", flat=True)
         if _suffix_re.match(slug)
     }
@@ -315,7 +313,7 @@ def delete_orgs_created_by_user(user_id: UUID) -> None:
     """
     from apps.orgs.tasks import cancel_stripe_subs_task
 
-    orgs = list(Org.objects.filter(created_by_id=user_id, deleted_at__isnull=True))
+    orgs = list(Org.objects.filter(created_by_id=user_id))
     if not orgs:
         return
 
@@ -369,11 +367,7 @@ def decrement_subscription_seats(org_id: UUID) -> None:
     # inside the txn and push to Stripe only after commit to avoid holding
     # DB locks across the external API call.
     with transaction.atomic():
-        new_quantity = (
-            OrgMember.objects.select_for_update()
-            .filter(org_id=org_id, org__deleted_at__isnull=True)
-            .count()
-        )
+        new_quantity = OrgMember.objects.select_for_update().filter(org_id=org_id).count()
 
     if new_quantity < 1:
         return
@@ -392,12 +386,12 @@ def decrement_subscription_seats(org_id: UUID) -> None:
 
 
 def _cancel_team_subscription(org: Org) -> None:
-    """Cancel the team subscription for an org via Stripe (immediate cancellation)."""
+    """Cancel the team subscription for an org via Stripe (immediate, no refund)."""
     sub = _get_active_stripe_sub(org.id)
     if sub is None or sub.stripe_id is None:
         return
     try:
-        stripe.Subscription.cancel(sub.stripe_id)
+        stripe.Subscription.cancel(sub.stripe_id, prorate=False)
     except stripe.StripeError:
         logger.exception(
             "Failed to cancel Stripe sub %s for org %s",

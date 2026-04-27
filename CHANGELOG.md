@@ -8,6 +8,47 @@ From `v0.7.0` onward, `saasmint-core` (root), `saasmint-core-lib` (`core/`),
 and the frontend `saasmint-app` ship in lockstep — a `v<X.Y.Z>` tag is
 only valid if all three repos already match `<X.Y.Z>` on `main`.
 
+## [0.8.1] - 2026-04-27
+
+### Changed
+
+- **Stripe subscription cancellations now pass `prorate=False`.** Org
+  deletion (`apps.orgs.tasks.cancel_stripe_subs_task`,
+  `apps.orgs.services._cancel_team_subscription`) and GDPR account
+  deletion (`saasmint_core.services.gdpr.delete_account`) are terminal
+  actions; the unused billing period is not refunded. Previously Stripe
+  applied default proration, which could issue an unwanted credit/refund
+  on the customer.
+
+### Fixed
+
+- **Org-deletion sub-cancel task is now idempotent and per-item
+  fault-isolated.** `cancel_stripe_subs_task` swallows Stripe
+  `resource_missing` (`InvalidRequestError`) so a DELETE-then-webhook
+  race or a Celery retry after partial success no longer raises. A
+  transient Stripe error on one `sub_id` (e.g. `APIConnectionError`,
+  or a non-`resource_missing` `InvalidRequestError`) no longer
+  short-circuits the loop — every sub in the batch is still attempted,
+  then the first failure is re-raised at end-of-loop so Celery records
+  it. Without this, with no `autoretry_for` on the task, subs
+  positioned after the failing one would have leaked: never cancelled,
+  never reattempted.
+- **`deactivate_org` is a no-op when the org row is already gone.**
+  Covers the DELETE-then-webhook race where
+  `customer.subscription.deleted` fires after the org has been
+  hard-deleted.
+
+### Removed
+
+- **`Org.deleted_at` column and partial unique index.** The org table
+  no longer carries a soft-delete marker — hard delete is the only
+  termination path. Migration `apps/orgs/migrations/0009_remove_org_deleted_at.py`
+  drops the column and replaces the partial `UniqueConstraint(slug,
+  where deleted_at IS NULL)` with an unconditional `UniqueConstraint(slug)`.
+  All `org__deleted_at__isnull=True` filters in `apps.orgs.views`,
+  `apps.orgs.services`, and `apps.billing.views` are gone, as is the
+  field on `core.saasmint_core.domain.org.Org`.
+
 ## [0.8.0] - 2026-04-26
 
 ### Added

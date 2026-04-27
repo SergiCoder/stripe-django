@@ -59,15 +59,14 @@ class TestGenerateUniqueSlug:
         slug = generate_unique_slug("Taken")
         assert slug == "taken-2"
 
-    def test_ignores_soft_deleted_org_slug(self):
+    def test_reuses_slug_after_hard_delete(self):
         user = User.objects.create_user(
             email="slug-del@example.com",
             full_name="Slug Del",
             account_type=AccountType.ORG_MEMBER,
         )
         org = Org.objects.create(name="Deleted", slug="deleted", created_by=user)
-        org.deleted_at = datetime.now(UTC)
-        org.save(update_fields=["deleted_at"])
+        org.delete()
         slug = generate_unique_slug("Deleted")
         assert slug == "deleted"
 
@@ -205,6 +204,11 @@ class TestDeactivateOrg:
         async_to_sync(deactivate_org)(org.id)
         org.refresh_from_db()
         assert org.is_active is False
+
+    def test_missing_org_is_noop(self):
+        """DELETE-then-webhook race: org was hard-deleted before
+        ``customer.subscription.deleted`` fired. The handler must not raise."""
+        async_to_sync(deactivate_org)(uuid4())
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +393,7 @@ class TestCancelTeamSubscription:
         )
 
         _cancel_team_subscription(org)
-        mock_cancel.assert_called_once_with("sub_cancel")
+        mock_cancel.assert_called_once_with("sub_cancel", prorate=False)
 
     @patch("stripe.Subscription.cancel", side_effect=Exception("Stripe error"))
     def test_logs_error_on_stripe_failure(self, mock_cancel):
