@@ -175,26 +175,28 @@ def _create_org_with_owner(
     return org, member
 
 
-async def deactivate_org(org_id: UUID) -> None:
-    """Deactivate an org after its subscription is canceled.
+async def delete_org_on_subscription_cancel(org_id: UUID) -> None:
+    """Hard-delete an org after its team subscription is canceled.
 
-    Sets is_active=False and cancels pending invitations.
-    Called from the customer.subscription.deleted webhook handler.
+    Cascades to memberships, pending invitations, and single-org-member user
+    accounts. Called from the ``customer.subscription.deleted`` webhook
+    handler. Idempotent: a missing org row is a no-op (DELETE-then-webhook
+    race or a duplicate webhook delivery).
+
+    All cancel causes cascade — voluntary (owner clicked cancel) and
+    involuntary (failed-payment retries exhausted, fraud, Stripe-side
+    termination) collapse to the same code path. The voluntary/involuntary
+    distinction was deliberately removed; do not reinstate a check on
+    ``cancellation_details.reason``. See
+    .claude/shared/saasmint/signup-subscription-flow.md (rule 9, discussion
+    2026-04-27).
     """
-    updated = await Org.objects.filter(id=org_id, is_active=True).aupdate(is_active=False)
-    if updated:
-        await cancel_pending_invitations_for_org(org_id)
-        logger.info("Deactivated org %s after subscription cancellation", org_id)
-    else:
-        logger.warning("Org %s already inactive or not found", org_id)
-
-
-async def cancel_pending_invitations_for_org(org_id: UUID) -> int:
-    """Cancel all pending invitations for an org. Returns count cancelled."""
-    count = await Invitation.objects.filter(org_id=org_id, status=InvitationStatus.PENDING).aupdate(
-        status=InvitationStatus.CANCELLED
-    )
-    return count
+    org = await Org.objects.filter(id=org_id).afirst()
+    if org is None:
+        logger.info("Org %s already gone; subscription cancel is a no-op", org_id)
+        return
+    await sync_to_async(_delete_org_db_only)(org)
+    logger.info("Deleted org %s after subscription cancellation", org_id)
 
 
 def accept_invitation(

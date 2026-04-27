@@ -20,7 +20,7 @@ from drf_spectacular.utils import (
 )
 from rest_framework import serializers as drf_serializers
 from rest_framework import status
-from rest_framework.exceptions import APIException, NotFound, PermissionDenied
+from rest_framework.exceptions import APIException, PermissionDenied
 from rest_framework.pagination import LimitOffsetPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
@@ -65,11 +65,6 @@ class _Conflict(APIException):
 class _InvitationExpired(_Gone):
     default_detail = "This invitation has expired."
     default_code = "invitation_expired"
-
-
-class _InvitationOrgGone(NotFound):
-    default_detail = "This organization no longer exists."
-    default_code = "org_not_found"
 
 
 class _InvitationEmailExists(_Conflict):
@@ -581,8 +576,6 @@ class InvitationAcceptView(OrgsScopedView):
             raise _InvitationExpired
 
         org = invitation.org
-        if not org.is_active:
-            raise _InvitationOrgGone
 
         # Email must not already be registered
         if email_is_registered(invitation.email):
